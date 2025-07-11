@@ -1,28 +1,106 @@
-% === Load Excel Data ===
-filename = 'C:\Users\brand\Desktop\AllCombineSpeciasAnalysis\Test 4\Test1Part1.xlsx';  % Change to your actual file path if needed
-opts = detectImportOptions(filename);
-data = readtable(filename, opts);
+import pandas as pd
+import numpy as np
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import GridSearchCV
+from sklearn.model_selection import LeaveOneGroupOut
+from sklearn.feature_selection import VarianceThreshold
+from sklearn.metrics import accuracy_score
+import os
 
-% === Remove first two rows and last row ===
-data(1:2, :) = [];
-data(end, :) = [];
+# === 1. Load Data ===
+file_path = r"C:\Users\brand\Desktop\AllCombineSpeciasAnalysis\Test 4\FilterdADTest4.xlsx"  # Update path
+df = pd.read_excel(file_path)
 
-% === Extract species names and the precomputed columns ===
-species = data{:, 1};
-zeros_fraction = data.Zeros;            % use actual column name
-mean_values    = data.Average;             % use actual column name
-std_values     = data.STD;  % use actual column name
+# === 2. Prepare Metadata and Feature Matrix ===
+labels = df['label'].values
+groups = df['species'].values
+feature_df = df.drop(columns=['species', 'Source', 'label'])
 
-% === Apply Filters ===
-keepIdx = (zeros_fraction >= 0.5) & (std_values >= 30) & (mean_values >= 20);
+# === 3. Compute Mean and STD for Filtering ===
+feature_means = feature_df.mean()
+feature_stds = feature_df.std()
 
-% === Create Filtered Table with Zeros ===
-filteredTable = table(species(keepIdx), mean_values(keepIdx), std_values(keepIdx), ...
-                       zeros_fraction(keepIdx), ...
-    'VariableNames', {'Species', 'Mean', 'Standard_Deviation', 'Zeros'});
+# === 4. Define Thresholds to Test ===
+mean_thresholds = list(range(20, 201, 10))  # 50, 60, ..., 200
+std_thresholds = list(range(20, 201, 10))   # 50, 60, ..., 200
 
+output_dir = r"C:\Users\brand\Desktop\FilteredFeatureSets"
+os.makedirs(output_dir, exist_ok=True)
 
-% === Save Output ===
-desktopPath = fullfile(getenv('USERPROFILE'), 'Desktop', 'Filtered_AD_Species_Test_4.xlsx');
-writetable(filteredTable, desktopPath);
+# === 5. Define RF Hyperparameters ===
+param_grid = {
+    'n_estimators': [50, 100],
+    'max_depth': [3, 5, 10],
+    'min_samples_split': [2, 5],
+    'min_samples_leaf': [1, 2],
+    'max_features': ['sqrt']
+}
 
+# === 6. Loop Through Each Filter Setting ===
+for mean_thresh in mean_thresholds:
+    for std_thresh in std_thresholds:
+        # Apply filtering
+        keep_mask = (feature_means >= mean_thresh) & (feature_stds >= std_thresh)
+        filtered_features = feature_df.loc[:, keep_mask]
+        if filtered_features.shape[1] == 0:
+            print(f"Mean ≥ {mean_thresh}, STD ≥ {std_thresh} => No features passed filter.")
+            continue
+
+            # Combine with metadata to save
+        filtered_full = pd.concat([
+            df[['species', 'Source', 'label']].reset_index(drop=True),
+            filtered_features.reset_index(drop=True)
+        ], axis=1)
+
+        # Save to Excel file
+        output_filename = f"filtered_mean{mean_thresh}_std{std_thresh}.xlsx"
+        output_path = os.path.join(output_dir, output_filename)
+        filtered_full.to_excel(output_path, index=False)
+
+        print(f"Saved: {output_path}")
+        # Prepare tracking
+        fold_accuracies = []
+        y_true, y_pred, y_probs = [], [], []
+
+        # Leave-One-Group-Out CV
+        logo = LeaveOneGroupOut()
+        for train_idx, test_idx in logo.split(filtered_features, labels, groups):
+            X_train_raw = filtered_features.iloc[train_idx]
+            X_test_raw = filtered_features.iloc[test_idx]
+            y_train = labels[train_idx]
+            y_test = labels[test_idx]
+
+            # Variance Threshold on training only
+            vt = VarianceThreshold(threshold=0.0)
+            X_train_vt = vt.fit_transform(X_train_raw)
+            X_test_vt = vt.transform(X_test_raw)
+            vt_features = X_train_raw.columns[vt.get_support()]
+            X_train = pd.DataFrame(X_train_vt, columns=vt_features)
+            X_test = pd.DataFrame(X_test_vt, columns=vt_features)
+
+            # Grid Search inside the fold
+            rf_classifier = RandomForestClassifier(class_weight='balanced', random_state=42)
+            grid_search = GridSearchCV(rf_classifier, param_grid, scoring='roc_auc', cv=3, n_jobs=-1)
+            grid_search.fit(X_train, y_train)
+            best_params = grid_search.best_params_
+
+            # Retrain with best parameters
+            optimized_rf = RandomForestClassifier(**best_params, random_state=42)
+            optimized_rf.fit(X_train, y_train)
+
+            # Predictions
+            y_pred_fold = optimized_rf.predict(X_test)
+            y_probs_fold = optimized_rf.predict_proba(X_test)[:, 1]
+
+            y_pred.extend(y_pred_fold)
+            y_true.extend(y_test)
+            y_probs.extend(y_probs_fold)
+            fold_accuracies.append(accuracy_score(y_test, y_pred_fold))
+
+        # Print Results
+        if fold_accuracies:
+            mean_acc = np.mean(fold_accuracies)
+            std_acc = np.std(fold_accuracies)
+            print(f"Mean ≥ {mean_thresh}, STD ≥ {std_thresh} => Accuracy: {mean_acc:.2f}")
+        else:
+            print(f"Mean ≥ {mean_thresh}, STD ≥ {std_thresh} => No folds ran.")
