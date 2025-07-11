@@ -1,0 +1,28 @@
+% === Load Excel Data ===
+filename = 'C:\Users\brand\Desktop\AllCombineSpeciasAnalysis\Test 4\Test1Part1.xlsx';  % Change to your actual file path if needed
+opts = detectImportOptions(filename);
+data = readtable(filename, opts);
+
+% === Remove first two rows and last row ===
+data(1:2, :) = [];
+data(end, :) = [];
+
+% === Extract species names and the precomputed columns ===
+species = data{:, 1};
+zeros_fraction = data.Zeros;            % use actual column name
+mean_values    = data.Average;             % use actual column name
+std_values     = data.STD;  % use actual column name
+
+% === Apply Filters ===
+keepIdx = (zeros_fraction >= 0.5) & (std_values >= 30) & (mean_values >= 20);
+
+% === Create Filtered Table with Zeros ===
+filteredTable = table(species(keepIdx), mean_values(keepIdx), std_values(keepIdx), ...
+                       zeros_fraction(keepIdx), ...
+    'VariableNames', {'Species', 'Mean', 'Standard_Deviation', 'Zeros'});
+
+
+% === Save Output ===
+desktopPath = fullfile(getenv('USERPROFILE'), 'Desktop', 'Filtered_AD_Species_Test_4.xlsx');
+writetable(filteredTable, desktopPath);
+
