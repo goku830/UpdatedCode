@@ -1,0 +1,250 @@
+import pandas as pd
+import numpy as np
+from scipy.stats import pearsonr
+from collections import Counter
+from tqdm import tqdm
+
+# ======= 1. Load the CSV File =======
+file_path = r"C:\Users\brand\Desktop\AllCombineSpeciasAnalysis\Top100\Test10.560100.xlsx"
+data = pd.read_excel(file_path)
+
+
+# Separate features and target variable
+X = pd.DataFrame(data.drop(columns=['species', 'label', 'Source']))
+y = data['label']  # Target: 0 = Healthy, 1 = AD
+
+# Extract biomarker names
+biomarker_names = X.columns.tolist()
+
+# Identify AD and Healthy biomarkers
+ad_biomarkers = set(X.loc[y == 1].columns[(X.loc[y == 1] != 0).any()])
+
+def compute_significant_correlations(df,group_label, p_threshold=0.05):
+    sources, targets, p_values = [], [], []
+    correlations = []
+    diagnosis_flags, data_types, groups = [], [], []
+    biomarker_names = df.columns.tolist()
+    biomatrix = df.to_numpy()
+    num_biomarkers = len(biomarker_names)
+    for i in tqdm(range(num_biomarkers), desc="Correlating pairs"):
+        for j in range(i + 1, num_biomarkers):
+            # Skip constant columns
+            if np.all(biomatrix[:, i] == biomatrix[0, i]) or np.all(biomatrix[:, j] == biomatrix[0, j]):
+                continue
+
+            r, p = pearsonr(biomatrix[:, i], biomatrix[:, j])
+            if p < p_threshold:
+                correlations.append(r)
+                biomarker_1 = biomarker_names[i]
+                biomarker_2 = biomarker_names[j]
+                sources.append(biomarker_1)
+                targets.append(biomarker_2)
+                p_values.append(p)
+
+                # Label data type
+                b1_is_mt = biomarker_1.startswith("mt_")
+                b2_is_mt = biomarker_2.startswith("mt_")
+                if b1_is_mt and b2_is_mt:
+                    data_type = "RNA"
+                elif not b1_is_mt and not b2_is_mt:
+                    data_type = "MAG"
+                else:
+                    data_type = "Mixed"
+
+                data_types.append(data_type)
+
+                # Diagnosis flag: AD = 1, Healthy = 0
+                diagnosis_flag = 1 if group_label.upper() == "AD" else 0
+                diagnosis_flags.append(diagnosis_flag)
+                groups.append(group_label)
+
+    return pd.DataFrame({
+        'Biomarker_1': sources,
+        'Biomarker_2': targets,
+        'P_Value': p_values,
+        'Correlation': correlations,
+        'Diagnosis': diagnosis_flags,
+        'Group': groups,
+        'Data_Type': data_types
+    })
+
+# ======= 3. Run for AD and Healthy Groups =======
+ad_df = X[y == 1]
+healthy_df = X[y == 0]
+
+ad_results = compute_significant_correlations(ad_df, 'AD')
+healthy_results = compute_significant_correlations(healthy_df, 'Healthy')
+
+# ======= 4. Combine and Save =======
+combined_results = pd.concat([ad_results, healthy_results], ignore_index=True)
+
+output_path = r"C:\Users\brand\Desktop\biomarker_AD_vs_Healthy_edges_species_p01.csv"
+combined_results.to_csv(output_path, index=False)
+
+print(f"File saved successfully at: {output_path}")
+print(" Preview of results:")
+print(combined_results.head())
+
+# Count appearances in significant pairs
+ad_biomarker_counts = Counter(ad_results['Biomarker_1']) + Counter(ad_results['Biomarker_2'])
+
+# Convert to DataFrame for sorting
+ad_biomarker_counts_df = pd.DataFrame.from_dict(ad_biomarker_counts, orient='index', columns=['Count'])
+ad_biomarker_counts_df = ad_biomarker_counts_df.sort_values(by='Count', ascending=False)
+
+# Preview top biomarkers associated with AD (by frequency in significant pairs)
+print(ad_biomarker_counts_df.head(10))
+
+# Filter separately
+# === Step 1: Create edge sets for AD and Healthy ===
+ad_edges_set = set([tuple(sorted(edge)) for edge in ad_results[["Biomarker_1", "Biomarker_2"]].values])
+healthy_edges_set = set([tuple(sorted(edge)) for edge in healthy_results[["Biomarker_1", "Biomarker_2"]].values])
+
+# === Step 2: Get unique-to-AD edges ===
+unique_to_ad = ad_edges_set - healthy_edges_set
+
+# === Step 3: Filter ad_results to keep only unique edges ===
+unique_ad_df = ad_results.copy()
+unique_ad_df["Edge_Tuple"] = unique_ad_df.apply(
+    lambda row: tuple(sorted([row["Biomarker_1"], row["Biomarker_2"]])), axis=1
+)
+unique_ad_df = unique_ad_df[unique_ad_df["Edge_Tuple"].isin(unique_to_ad)]
+
+
+# === Get unique-to-Healthy edges ===
+unique_to_healthy = healthy_edges_set - ad_edges_set
+
+# === Filter healthy_results to keep only unique edges ===
+unique_healthy_df = healthy_results.copy()
+unique_healthy_df["Edge_Tuple"] = unique_healthy_df.apply(
+    lambda row: tuple(sorted([row["Biomarker_1"], row["Biomarker_2"]])), axis=1
+)
+unique_healthy_df = unique_healthy_df[unique_healthy_df["Edge_Tuple"].isin(unique_to_healthy)]
+
+# === Create sorted edge tuples for reliable comparison ===
+def edge_tuple(row):
+    return tuple(sorted([row["Biomarker_1"], row["Biomarker_2"]]))
+
+ad_results["Edge_Tuple"] = ad_results.apply(edge_tuple, axis=1)
+healthy_results["Edge_Tuple"] = healthy_results.apply(edge_tuple, axis=1)
+
+# === Build sets of edges (excluding disease node links) ===
+ad_edges_set = set(ad_results["Edge_Tuple"])
+healthy_edges_set = set(healthy_results["Edge_Tuple"])
+# === Find unique and shared edges ===
+unique_to_ad = ad_edges_set - healthy_edges_set
+unique_to_healthy = healthy_edges_set - ad_edges_set
+
+# === STEP 1: Identify biomarkers involved in AD and Healthy edges ===
+healthy_biomarkers = set([b for edge in healthy_edges_set for b in edge])
+
+# === STEP 2: Find shared biomarkers (present in both AD and Healthy) ===
+shared_biomarkers = ad_biomarkers & healthy_biomarkers
+print(f"Shared biomarkers (excluded from both groups): {len(shared_biomarkers)}")
+
+
+# === Helper Functions ===
+def edge_tuple(row):
+    return tuple(sorted([row["Biomarker_1"], row["Biomarker_2"]]))
+
+
+def append_rna_mag(name):
+    name = str(name).strip()
+    return f"{name} (RNA)" if name.startswith("mt_") else f"{name} (MAG)"
+
+
+# === Add Edge_Tuple Columns ===
+ad_results["Edge_Tuple"] = ad_results.apply(edge_tuple, axis=1)
+healthy_results["Edge_Tuple"] = healthy_results.apply(edge_tuple, axis=1)
+
+# === Build Edge Sets ===
+ad_edges_set = set(ad_results["Edge_Tuple"])
+healthy_edges_set = set(healthy_results["Edge_Tuple"])
+
+
+# === Shared Biomarkers for Logging Only ===
+ad_biomarkers = set([b for edge in ad_edges_set for b in edge])
+healthy_biomarkers = set([b for edge in healthy_edges_set for b in edge])
+shared_biomarkers = ad_biomarkers & healthy_biomarkers
+print(f"Shared biomarkers (excluded from both groups): {len(shared_biomarkers)}")
+
+
+# Filter to unique healthy edges only
+healthy_filtered = healthy_results[healthy_results["Edge_Tuple"].isin(unique_to_healthy)].copy()
+
+# Sort by P-Value (most significant first)
+healthy_filtered = healthy_filtered.sort_values(by="P_Value", ascending=True)
+
+# Keep only the top N most significant edges
+healthy_filtered = healthy_filtered.head()
+# === Function to Process and Export Edge Data ===
+def process_group(df, unique_edges, disease_name, output_path):
+    # Filter to unique edges
+    unique_edges_df = df[df["Edge_Tuple"].isin(unique_edges)].copy()
+
+    # Apply RNA/DNA labels
+    unique_edges_df["Biomarker_1"] = unique_edges_df["Biomarker_1"].apply(append_rna_mag)
+    unique_edges_df["Biomarker_2"] = unique_edges_df["Biomarker_2"].apply(append_rna_mag)
+
+    # Recompute Edge_Tuple after renaming
+    unique_edges_df["Edge_Tuple"] = unique_edges_df.apply(edge_tuple, axis=1)
+
+    # Compute weight
+    unique_edges_df["Weight"] = 1 / (unique_edges_df["P_Value"] + 1e-10)
+
+    # Build biomarker-to-biomarker edges
+    # In process_group, keep Correlation too:
+    base_edges = unique_edges_df[["Biomarker_1", "Biomarker_2", "Correlation", "Weight"]].copy()
+    base_edges.columns = ["Source", "Target", "Correlation", "Weight"]
+    base_edges["Type"] = "Undirected"
+
+    # Build biomarker-to-disease edges
+    biomarker_nodes = set(base_edges["Source"]).union(set(base_edges["Target"]))
+    disease_links = pd.DataFrame({
+        "Source": list(biomarker_nodes),
+        "Target": disease_name,
+        "Type": "Undirected"
+    })
+
+    # Combine both and export
+    combined_edges = pd.concat([base_edges, disease_links], ignore_index=True)
+    combined_edges.to_csv(output_path, index=False)
+    print(f"✅ Gephi-ready {disease_name} edge list saved to: {output_path}")
+
+from collections import Counter
+
+# === Count appearance of biomarkers in all positive/negative edges ===
+positive_edges = combined_results[combined_results['Correlation'] > 0]
+negative_edges = combined_results[combined_results['Correlation'] < 0]
+
+# === Count appearance ===
+pos_counts = Counter(positive_edges['Biomarker_1']) + Counter(positive_edges['Biomarker_2'])
+neg_counts = Counter(negative_edges['Biomarker_1']) + Counter(negative_edges['Biomarker_2'])
+
+# === Convert to DataFrame and sort ===
+pos_df = pd.DataFrame.from_dict(pos_counts, orient='index', columns=['Positive_Edge_Count'])
+neg_df = pd.DataFrame.from_dict(neg_counts, orient='index', columns=['Negative_Edge_Count'])
+
+# Sort and save
+pos_df = pos_df.sort_values(by='Positive_Edge_Count', ascending=False)
+neg_df = neg_df.sort_values(by='Negative_Edge_Count', ascending=False)
+
+# Save files
+pos_df.to_csv(r"C:\Users\brand\Desktop\top_positive_species_biomarkers_ALL_AD.csv")
+neg_df.to_csv(r"C:\Users\brand\Desktop\top_negative_species_biomarkers_ALL_AD.csv")
+
+# === Export AD edges ===
+process_group(
+    df=ad_results,
+    unique_edges=unique_to_ad,
+    disease_name="AD",
+    output_path=r"C:\Users\brand\Desktop\gephi_AD_weighted_species1.csv"
+)
+
+# Process and save the reduced Healthy edge list
+process_group(
+    df=healthy_filtered,
+    unique_edges=set(healthy_filtered["Edge_Tuple"]),
+    disease_name="Healthy",
+    output_path=r"C:\Users\brand\Desktop\gephi_healthy_weighted_species_edges1.csv"
+)
