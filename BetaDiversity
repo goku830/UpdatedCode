@@ -1,0 +1,319 @@
+import pandas as pd
+import numpy as np
+from scipy.stats import pearsonr
+from scipy.spatial.distance import braycurtis
+import matplotlib.pyplot as plt
+from tqdm import tqdm
+from sklearn.feature_selection import VarianceThreshold
+# ======= 1. Load the CSV File =======
+file_path = r"C:\Users\brand\Desktop\AllCombineSpeciasAnalysis\Top100\Test10.560100.xlsx"
+data = pd.read_excel(file_path)
+
+# Separate features and target variable
+X = pd.DataFrame(data.drop(columns=['species', 'label','Source']))
+y = data['label']  # Target: 0 = Healthy, 1 = AD
+
+biomarker_names = X.columns.tolist()
+
+# Convert DataFrame to NumPy array
+biomarker_matrix = X.to_numpy()
+
+# Identify AD and Healthy biomarkers
+ad_biomarkers = set(X.loc[y == 1].columns[(X.loc[y == 1] != 0).any()])
+nonad_biomarkers = set(X.loc[y == 0].columns[(X.loc[y == 0] != 0).any()])
+
+# Print shape check
+print(f"Shape of biomarker_matrix: {biomarker_matrix.shape}")
+print(f"Number of biomarkers: {len(biomarker_names)}")
+
+# ======= 3. Compute Pearson Correlation & P-Values =======
+num_biomarkers = len(biomarker_names)
+
+# Lists to store significant pairs
+significant_source = []
+significant_target = []
+significant_p_values = []
+ad_meta_flags = []
+
+p_threshold = 0.05
+
+for i in tqdm(range(num_biomarkers), desc="Correlating pairs"):
+    for j in range(i + 1, num_biomarkers):
+        if np.all(biomarker_matrix[:, i] == biomarker_matrix[0, i]) or np.all(biomarker_matrix[:, j] == biomarker_matrix[0, j]):
+            continue  # Skip constant biomarkers
+
+        r, p = pearsonr(biomarker_matrix[:, i], biomarker_matrix[:, j])
+        if p < p_threshold:
+            b1 = biomarker_names[i]
+            b2 = biomarker_names[j]
+
+            is_b1_AD = b1 in ad_biomarkers
+            is_b2_AD = b2 in ad_biomarkers
+            if b1 in ad_biomarkers and b2 in ad_biomarkers:
+                ad_meta_flags.append("Both_AD")
+            elif b1 in nonad_biomarkers and b2 in nonad_biomarkers:
+                ad_meta_flags.append("Both_NonAD")
+            else:
+                continue  # skip mixed
+
+            significant_source.append(b1)
+            significant_target.append(b2)
+            significant_p_values.append(p)
+
+# ======= 3. Create DataFrame =======
+filtered_edge_list = pd.DataFrame({
+    'Biomarker_1': significant_source,
+    'Biomarker_2': significant_target,
+    'P_Value': significant_p_values,
+    'AD_Meta': ad_meta_flags
+})
+
+# ======= 4. Add RNA/DNA/Mixed Type Label =======
+def classify_pair_type(b1, b2):
+    try:
+        b1_is_mt = b1.startswith("mt_")
+        b2_is_mt = b2.startswith("mt_")
+        if b1_is_mt and b2_is_mt:
+            return "RNA"
+        elif not b1_is_mt and not b2_is_mt:
+            return "MAG"
+        else:
+            return "Mixed"
+    except Exception as e:
+        print(f"Error checking types for {b1}, {b2}: {e}")
+        return "Mixed"
+
+filtered_edge_list["Data_Type"] = filtered_edge_list.apply(
+    lambda row: classify_pair_type(row["Biomarker_1"], row["Biomarker_2"]),
+    axis=1
+)
+
+# ======= 5. Save Results =======
+file_path = r"C:\Users\brand\Desktop\biomarker_results_AD_Combined_all_Species_Healthy_Beta_Analysis_filtered.csv"
+filtered_edge_list.to_csv(file_path, index=False)
+
+print(f"File saved successfully at {file_path}!")
+print("Columns in filtered_edge_list:", filtered_edge_list.columns)
+
+# PD VS healthy
+# ======= 1. Extract AD and Healthy Biomarker Data =======
+diagnosis_labels = y.to_numpy()  # Convert labels to NumPy array
+# Get indices for AD and Healthy cases
+ad_indices = np.where(diagnosis_labels == 1)[0]  # AD cases
+healthy_indices = np.where(diagnosis_labels == 0)[0]  # Healthy cases
+
+# Extract biomarker data separately
+ad_biomarker_matrix = biomarker_matrix[ad_indices, :]
+healthy_biomarker_matrix = biomarker_matrix[healthy_indices, :]
+
+# Compute Bray-Curtis only for biomarkers in significant correlations
+significant_biomarkers = set(filtered_edge_list['Biomarker_1']).union(filtered_edge_list['Biomarker_2'])
+# Initialize dictionary to store cross-group Bray-Curtis distances
+biomarker_beta_diversity_cross = {}
+
+# ======= 4. Compute Bray-Curtis Distance =======
+for biomarker in significant_biomarkers:
+    i = biomarker_names.index(biomarker)
+    ad_values = ad_biomarker_matrix[:, i]
+    healthy_values = healthy_biomarker_matrix[:, i]
+
+    # Ensure equal sample sizes
+    min_size = min(len(ad_values), len(healthy_values))
+    ad_values, healthy_values = ad_values[:min_size], healthy_values[:min_size]
+
+    # Print for debugging if needed
+    print(f"Biomarker: {biomarker}")
+    print("AD:", ad_values)
+    print("Healthy:", healthy_values)
+
+    # Compute mean abundance in each group
+    ad_mean = np.mean(ad_values)
+    healthy_mean = np.mean(healthy_values)
+
+    if ad_mean > healthy_mean:
+        dominant_group = "AD"
+    elif healthy_mean > ad_mean:
+        dominant_group = "Healthy"
+    else:
+        dominant_group = "Equal"
+
+    # Check for zero-only or disjoint distributions
+    if np.all(ad_values == 0) and np.all(healthy_values == 0):
+        beta_div = np.nan  # Skip zero-only biomarkers
+    elif np.sum((ad_values > 0) & (healthy_values > 0)) == 0:
+        beta_div = np.nan  # Skip disjoint biomarkers
+    else:
+        beta_div = braycurtis(ad_values, healthy_values)
+
+    # Store Bray-Curtis distance
+    biomarker_beta_diversity_cross[biomarker_names[i]] = (beta_div, dominant_group)
+
+# Correct handling of tuple (bray-curtis, dominant_group)
+biomarker_beta_diversity_cross = {
+    biomarker: ((1.0 if np.isnan(value[0]) else value[0]), value[1])
+    for biomarker, value in biomarker_beta_diversity_cross.items()
+}
+beta_diversity_cross_df = pd.DataFrame([
+    {
+        "Biomarker": biomarker,
+        "Bray_Curtis_CrossGroup": 1.0 if np.isnan(div[0]) else div[0],
+        "Dominant_Group": div[1]
+    }
+    for biomarker, div in biomarker_beta_diversity_cross.items()
+])
+
+
+
+# Filter for Bray-Curtis ≤ 0.2 and sort
+filtered_df = beta_diversity_cross_df[beta_diversity_cross_df["Bray_Curtis_CrossGroup"] <= 1.0]
+# Sort and select top 50
+filtered_df = filtered_df.sort_values(by="Bray_Curtis_CrossGroup", ascending=True)
+
+
+# Load Pearson correlation file
+correlation_file_path = r"C:\Users\brand\Desktop\AllCombineSpeciasAnalysis\ADSpeciesaboveavg100\Above 100 above0.5\AD_combined_Species_Pearson_Correlations.csv"
+correlation_df = pd.read_csv(correlation_file_path)
+correlation_df.columns = correlation_df.columns.str.strip()
+correlation_df['Biomarker'] = correlation_df['Biomarker'].str.strip()
+
+# Map biomarker to Pearson R
+correlation_map = dict(zip(correlation_df['Biomarker'], correlation_df['Correlation']))
+
+# Get bar colors based on Pearson correlation
+biomarkers = filtered_df["Biomarker"].tolist()
+bar_colors = ['red' if correlation_map.get(b, 0) >= 0 else 'blue' for b in biomarkers]
+
+# Plotting
+plt.figure(figsize=(20, 8))
+plt.bar(biomarkers, filtered_df["Bray_Curtis_CrossGroup"], color=bar_colors)
+
+plt.xticks(
+    ticks=range(len(biomarkers)),
+    labels=[
+        f"{b}\n({'MAG' if b.startswith('mt') else 'DNA'})" for b in biomarkers
+    ],
+    rotation=45,
+    fontsize=11.5,
+    ha='center'
+)
+
+plt.xlabel("Pathogen", fontsize=12)
+plt.ylabel("Beta-Diversity Dissimilarity", fontsize=12)
+plt.title("Bray-Curtis for AD Combined All Species vs Healthy", fontsize=14)
+plt.tight_layout()
+plt.show()
+
+# Add Pearson correlation and data type columns
+filtered_df['Pearson_Correlation'] = [correlation_map.get(b, 0) for b in biomarkers]
+filtered_df['Data_Type'] = ['RNA' if b.startswith('mt') else 'MAG' for b in biomarkers]
+
+# Export to CSV
+output_csv_path = r"C:\Users\brand\Desktop\Top_BrayCurtis_Biomarkers_Species.csv"
+filtered_df.to_csv(output_csv_path, index=False)
+print(f"Top biomarkers saved to: {output_csv_path}")
+# ======= 1. Load Top 50 Bray-Curtis Biomarkers =======
+# Assumes filtered_df is sorted so the top 50 are the most significant
+top_biomarkers = filtered_df['Biomarker'].tolist()
+
+# ======= 2. Filter Edge List to Only Include Top 50 Biomarkers =======
+filtered_edge_list = filtered_edge_list[
+    filtered_edge_list['Biomarker_1'].isin(top_biomarkers) |
+    filtered_edge_list['Biomarker_2'].isin(top_biomarkers)
+].copy()
+
+# ======= 3. Melt Edge List for Gephi Format =======
+gephi_edge_list = pd.melt(
+    filtered_edge_list,
+    id_vars=['P_Value', 'AD_Meta'],
+    value_vars=['Biomarker_1', 'Biomarker_2'],
+    value_name='Biomarker'
+).drop(columns=['variable'])
+
+# Merge dominant group from beta_diversity_cross_df
+gephi_edge_list = gephi_edge_list.merge(
+    beta_diversity_cross_df[['Biomarker', 'Dominant_Group']],
+    left_on='Biomarker',
+    right_on='Biomarker',
+    how='left'
+)
+
+# Rename dominant group to 'Target' for Gephi format
+gephi_edge_list.rename(columns={"Dominant_Group": "Target"}, inplace=True)
+
+gephi_edge_list = gephi_edge_list[['Biomarker', 'Target']].drop_duplicates()
+
+# ======= 4. Merge with Bray-Curtis Distance Table =======
+gephi_edge_list = gephi_edge_list.merge(beta_diversity_cross_df, on='Biomarker', how='left')
+
+# Append (RNA) or (DNA) label
+gephi_edge_list["Biomarker"] = gephi_edge_list["Biomarker"].apply(
+    lambda x: f"{x} (RNA)" if str(x).strip().startswith("mt_") else f"{x} (MAG)"
+)
+
+# Rename for Gephi format
+gephi_edge_list.rename(columns={
+    'Biomarker': 'Source',
+    'Diagnosis': 'Target',
+    'Bray_Curtis_CrossGroup': 'Weight'
+}, inplace=True)
+
+# Invert and scale Bray-Curtis weight
+gephi_edge_list["Weight"] = gephi_edge_list["Weight"].replace(0, 1)
+gephi_edge_list["Weight"] = 1 - gephi_edge_list["Weight"]
+gephi_edge_list["Weight"] = (gephi_edge_list["Weight"] * 100).round().astype(int)
+
+# ======= 5. Add Remaining Healthy Biomarkers (if missing) =======
+# Extract unique Healthy biomarkers from filtered edge list
+healthy_rows = filtered_edge_list[filtered_edge_list['AD_Meta'] == 0]
+healthy_only = pd.unique(
+    pd.concat([healthy_rows['Biomarker_1'], healthy_rows['Biomarker_2']])
+)
+
+# Create DataFrame
+healthy_df = pd.DataFrame({
+    'Biomarker': healthy_only,
+    'Target': 'Healthy'
+})
+
+# Merge with Bray-Curtis values
+healthy_df = healthy_df.merge(beta_diversity_cross_df, on='Biomarker', how='left')
+
+# Append RNA/DNA labels
+healthy_df['Biomarker'] = healthy_df['Biomarker'].apply(
+    lambda x: f"{x} (RNA)" if str(x).strip().startswith("mt_") else f"{x} (MAG)"
+)
+
+# Rename for Gephi
+healthy_df.rename(columns={
+    'Biomarker': 'Source',
+    'Target': 'Target',
+    'Bray_Curtis_CrossGroup': 'Weight'
+}, inplace=True)
+
+# Invert and scale weight
+healthy_df['Weight'] = healthy_df['Weight'].replace(0, 1)
+healthy_df['Weight'] = 1 - healthy_df['Weight']
+healthy_df['Weight'] = (healthy_df['Weight'] * 100).round().astype(int)
+
+# ======= 6. Combine Both Edge Lists and Save =======
+# Combine AD and Healthy edges
+combined_edges = pd.concat([gephi_edge_list, healthy_df], ignore_index=True)
+
+# Ensure final output only contains Top 50 biomarkers
+final_edges = combined_edges[
+    combined_edges['Source'].str.replace(r' \(RNA\)| \(MAG\)', '', regex=True).isin(top_biomarkers)
+]
+
+# Confirm target label distribution
+print("✅ Target label counts in final Gephi edge list:")
+print(final_edges['Target'].value_counts())
+
+# Save to CSV
+gephi_file_path = r"C:\Users\brand\Desktop\biomarker_gephi_edges_AD_vs_Healthy_Top_Average_Above_100.csv"
+# Keep only Source, Target, and Weight columns
+final_edges = final_edges[['Source', 'Target', 'Weight']]
+
+# Save to CSV
+final_edges.to_csv(gephi_file_path, index=False)
+
+print(f"🎉 Gephi edge list saved to: {gephi_file_path}")
