@@ -1,0 +1,79 @@
+Category	Subcategory	Pathogen	Disease/Notes
+Bacteria	Gram-Positive	Bacillus anthracis	Anthrax
+Bacteria	Gram-Positive	Bacillus cereus	Food poisoning
+Bacteria	Gram-Positive	Bacillus subtilis	-
+Bacteria	Gram-Positive	Clostridium botulinum	Botulism
+Bacteria	Gram-Positive	Clostridium difficile	C. diff infections
+Bacteria	Gram-Positive	Clostridium perfringens	Gas gangrene
+Bacteria	Gram-Positive	Clostridium tetani	Tetanus
+Bacteria	Gram-Positive	Corynebacterium diphtheriae	Diphtheria
+Bacteria	Gram-Positive	Staphylococcus aureus	Including MRSA
+Bacteria	Gram-Positive	Staphylococcus epidermidis	-
+Bacteria	Gram-Positive	Staphylococcus saprophyticus	-
+Bacteria	Gram-Positive	Streptococcus pneumoniae	Pneumonia
+Bacteria	Gram-Positive	Streptococcus pyogenes	Strep throat, scarlet fever
+Bacteria	Gram-Negative	Acinetobacter baumannii	-
+Bacteria	Gram-Negative	Aeromonas	-
+Bacteria	Gram-Negative	Alcaligenes faecalis	-
+Bacteria	Gram-Negative	Bartonella quintana	Trench fever
+Bacteria	Gram-Negative	Borrelia burgdorferi	Lyme disease
+Bacteria	Gram-Negative	Campylobacter jejuni	Food poisoning
+Bacteria	Gram-Negative	Escherichia coli	E. coli
+Bacteria	Gram-Negative	Helicobacter pylori	Gastric ulcers
+Bacteria	Gram-Negative	Klebsiella pneumoniae	-
+Bacteria	Gram-Negative	Legionella pneumophila	Legionnaires' disease
+Bacteria	Gram-Negative	Neisseria gonorrhoeae	Gonorrhea
+Bacteria	Gram-Negative	Neisseria meningitidis	Meningitis
+Bacteria	Gram-Negative	Pseudomonas aeruginosa	-
+Bacteria	Gram-Negative	Salmonella spp.	Food poisoning, typhoid fever
+Bacteria	Gram-Negative	Shigella sonnei	Shigellosis
+Bacteria	Gram-Negative	Vibrio cholerae	Cholera
+Bacteria	Gram-Negative	Yersinia pestis	Plague
+Bacteria	Other	Mycobacterium tuberculosis	Tuberculosis
+Bacteria	Other	Mycobacterium leprae	Leprosy
+Bacteria	Other	Chlamydia trachomatis	Chlamydia
+Bacteria	Other	Rickettsia prowazekii	Typhus
+Bacteria	Other	Treponema pallidum	Syphilis
+Viruses	DNA Viruses	Adenovirus	Respiratory infections
+Viruses	DNA Viruses	Epstein-Barr virus	Mononucleosis
+Viruses	DNA Viruses	Hepatitis B virus	HBV
+Viruses	DNA Viruses	Herpes simplex virus	HSV-1, HSV-2
+Viruses	DNA Viruses	Human papillomavirus	HPV, cervical cancer
+Viruses	DNA Viruses	Varicella-zoster virus	Chickenpox, shingles
+Viruses	DNA Viruses	Variola virus	Smallpox
+Viruses	RNA Viruses	Dengue virus	-
+Viruses	RNA Viruses	Ebola virus	-
+Viruses	RNA Viruses	Hepatitis A, C, D, E viruses	-
+Viruses	RNA Viruses	Human immunodeficiency virus	HIV, AIDS
+Viruses	RNA Viruses	Influenza viruses	Flu
+Viruses	RNA Viruses	Measles virus	-
+Viruses	RNA Viruses	Norovirus	-
+Viruses	RNA Viruses	Poliovirus	-
+Viruses	RNA Viruses	Rabies virus	-
+Viruses	RNA Viruses	SARS-CoV-2	COVID-19
+Viruses	RNA Viruses	West Nile virus	-
+Viruses	RNA Viruses	Zika virus	-
+Fungi	-	Aspergillus fumigatus	Aspergillosis
+Fungi	-	Candida albicans	Candidiasis
+Fungi	-	Candida auris	-
+Fungi	-	Cryptococcus neoformans	Cryptococcosis
+Fungi	-	Histoplasma capsulatum	Histoplasmosis
+Fungi	-	Pneumocystis jirovecii	Pneumocystis pneumonia
+Fungi	-	Tinea species	Ringworm, athlete's foot
+Protozoa	-	Cryptosporidium parvum	Cryptosporidiosis
+Protozoa	-	Entamoeba histolytica	Amoebiasis
+Protozoa	-	Giardia lamblia	Giardiasis
+Protozoa	-	Leishmania species	Leishmaniasis
+Protozoa	-	Plasmodium spp.	Malaria
+Protozoa	-	Toxoplasma gondii	Toxoplasmosis
+Protozoa	-	Trypanosoma brucei	African sleeping sickness
+Protozoa	-	Trypanosoma cruzi	Chagas disease
+Helminths	-	Ascaris lumbricoides	Ascariasis
+Helminths	-	Necator americanus	Hookworm
+Helminths	-	Schistosoma mansoni	Schistosomiasis
+Helminths	-	Taenia solium	Tapeworms
+Helminths	-	Trichinella spiralis	Trichinosis
+Helminths	-	Wuchereria bancrofti	Lymphatic filariasis
+Ectoparasites	-	Demodex mites	Demodicosis
+Ectoparasites	-	Pediculus humanus capitis	Head lice
+Ectoparasites	-	Sarcoptes scabiei	Scabies
