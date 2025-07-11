@@ -1,0 +1,224 @@
+%% === 1. Load Data ===
+edges = readtable('C:\Users\brand\Desktop\AllCombineSpeciasAnalysis\Top100\Gephi File\biomarker_AD_vs_Healthy_edges_species_p01.csv');
+
+% Fix duplicate column names (Biomarker and Biomarker.1)
+edges.Properties.VariableNames{1} = 'Source';
+edges.Properties.VariableNames{2} = 'Target';
+
+%% === 2. Extract Unique Species ===
+all_species = unique([edges.Source; edges.Target]);
+num_species = numel(all_species);
+
+positive_counts = zeros(num_species, 1);
+negative_counts = zeros(num_species, 1);
+
+for i = 1:num_species
+    sp = all_species{i};
+    involved = strcmp(edges.Source, sp) | strcmp(edges.Target, sp);
+    positive_counts(i) = sum(edges.Correlation(involved) > 0);
+    negative_counts(i) = sum(edges.Correlation(involved) < 0);
+end
+
+top_n = 20;
+[~, idx_pos] = sort(positive_counts, 'descend');
+top_idx_pos = idx_pos(1:top_n);
+top_species_pos = all_species(top_idx_pos)';
+top_pos_pos = positive_counts(top_idx_pos);
+top_neg_pos = negative_counts(top_idx_pos);
+total_edges_pos = top_pos_pos + top_neg_pos;
+
+ratio_pos = top_pos_pos ./ total_edges_pos;
+ratio_neg = top_neg_pos ./ total_edges_pos;
+
+% Combine into a table for easy viewing
+T_pos = table(top_species_pos', top_pos_pos, top_neg_pos, ratio_pos, ratio_neg, ...
+    'VariableNames', {'Species', 'PositiveCount', 'NegativeCount', 'PositiveRatio', 'NegativeRatio'});
+
+% Sort by positive ratio (descending)
+T_pos = sortrows(T_pos, 'PositiveRatio', 'descend');
+
+annotated_labels_pos = cell(top_n, 1);
+for i = 1:top_n
+    name = top_species_pos{i};
+    if startsWith(name, 'mt_')
+        annotated_labels_pos{i} = [name ' (RNA)'];
+    else
+        annotated_labels_pos{i} = [name ' (MAG)'];
+    end
+end
+
+figure;
+grouped_counts_pos = [top_pos_pos, top_neg_pos];
+b = bar(grouped_counts_pos, 'grouped');
+b(1).FaceColor = [1 0 0];
+b(2).FaceColor = [0.2 0.2 0.8];
+
+ax = gca;
+ax.FontSize = 13;
+ax.XTick = 1:top_n;
+ax.XTickLabel = annotated_labels_pos; 
+ax.TickLength = [0 0];
+ax.Position = [0.09 0.25 0.9 0.7];
+xtickangle(65);
+
+xlabel('Species','FontSize', 14);                  % Optional: removes "Species" label
+ylabel('Edge Count','FontSize', 14);
+title('Top 10 Species Ranked by Positive Correlations Mean ≥ 100, ≤ 50% Zeros, ≥ 60 STD', 'FontSize', 16);
+legend({'Positive', 'Negative'}, 'Location', 'southoutside', 'Orientation', 'horizontal');
+box on;
+
+
+%% === 5B. Top Species Ranked by Negative Correlation Count ===
+[~, idx_neg] = sort(negative_counts, 'descend');
+top_idx_neg = idx_neg(1:top_n);
+top_species_neg = all_species(top_idx_neg)';
+top_pos_neg = positive_counts(top_idx_neg);
+top_neg_neg = negative_counts(top_idx_neg);
+total_edges_neg = top_pos_neg + top_neg_neg;
+
+
+annotated_labels_neg = cell(top_n, 1);
+for i = 1:top_n
+    name = top_species_neg{i};
+    if startsWith(name, 'mt_')
+        annotated_labels_neg{i} = [name ' (RNA)'];
+    else
+        annotated_labels_neg{i} = [name ' (MAG)'];
+    end
+end
+
+ratio_pos = top_pos_neg ./ (top_pos_neg + top_neg_neg);
+ratio_neg = top_neg_neg ./ (top_pos_neg + top_neg_neg);
+
+% Combine into table
+T_neg = table(top_species_neg', top_pos_neg, top_neg_neg, ratio_pos, ratio_neg, ...
+    'VariableNames', {'Species', 'PositiveCount', 'NegativeCount', 'PositiveRatio', 'NegativeRatio'});
+
+% Sort by negative ratio (descending)
+T_neg = sortrows(T_neg, 'NegativeRatio', 'descend');
+
+% === Annotated Labels ===
+annotated_labels_neg = cell(top_n, 1);
+for i = 1:top_n
+    name = top_species_neg{i};
+    if startsWith(name, 'mt_')
+        annotated_labels_neg{i} = [name ' (RNA)'];
+    else
+        annotated_labels_neg{i} = [name ' (MAG)'];
+    end
+end
+
+figure;
+grouped_counts_neg = [top_pos_neg, top_neg_neg];
+b = bar(grouped_counts_neg, 'grouped');
+b(1).FaceColor = [1 0 0];
+b(2).FaceColor = [0.2 0.2 0.8];
+
+ax = gca;
+ax.FontSize = 13;
+ax.XTick = 1:top_n;
+ax.XTickLabel = annotated_labels_neg; 
+ax.TickLength = [0 0];
+ax.Position = [0.09 0.25 0.9 0.7];
+xtickangle(65);xlabel('Species ', 'FontSize', 16);
+ylabel('Edge Count', 'FontSize', 14);
+title('Top 10 Species Ranked by Negative Correlations Mean ≥ 100, ≤ 50% Zeros, ≥ 60 STD', 'FontSize', 16);
+legend({'Positive', 'Negative'}, 'Location', 'southoutside', 'Orientation', 'horizontal');
+box on;
+%% Correct Ratio
+%% === 3. Compute P/N Ratio ===
+epsilon = 1e-6;  % to avoid division by zero
+pn_ratio = positive_counts ./ (negative_counts + epsilon);
+
+%% === 4. Sort and Get Top 10 by P/N Ratio ===
+[~, idx_sorted] = sort(pn_ratio, 'descend');
+top_idx = idx_sorted(1:20);
+
+top_species = all_species(top_idx)';
+top_pos = positive_counts(top_idx);
+top_neg = negative_counts(top_idx);
+top_ratios = pn_ratio(top_idx);
+
+%% === 5. Annotate Labels ===
+annotated_labels = cell(20, 1);
+for i = 1:20
+    name = top_species{i};
+    if startsWith(name, 'mt_')
+        annotated_labels{i} = [name ' (RNA)'];
+    else
+        annotated_labels{i} = [name ' (MAG)'];
+    end
+end
+
+%% === 6. Bar Plot ===
+figure;
+bar(top_ratios, 'FaceColor', [0.2 0.6 0.2]);  % green bars
+
+ax = gca;
+ax.FontSize = 13;
+ax.XTick = 1:20;
+ax.XTickLabel = annotated_labels;
+ax.TickLength = [0 0];
+xtickangle(65);
+xlabel('Species', 'FontSize', 14);
+ylabel('P / N Edge Ratio', 'FontSize', 14);
+title('Top 10 Species by Positive-to-Negative Edge Ratio', 'FontSize', 16);
+box on;
+
+%% Load data
+data = readtable('C:\Users\brand\Desktop\AllCombineSpeciasAnalysis\Top100\Gephi File\uniquetoadtest1.csv');
+
+% Optional: remove "AD_" prefix from species names
+data.Label = strrep(data.Label, 'AD_', '');
+
+% Remove "AD" label if present
+data(strcmpi(data.Label, 'AD'), :) = [];
+
+% Sort data by Degree in descending order
+data = sortrows(data, 'Degree', 'descend');
+
+% Create vertical bar plot
+figure;
+bar(data.Degree, 'FaceColor', [0.2 0.4 0.6]);  % Custom color
+
+% Set x-axis labels as species names
+xticks(1:height(data));
+xticklabels(data.Label);
+xtickangle(45);  % Rotate x-axis labels for readability
+ax = gca;  % Get current axis handle
+ax.TickLength = [0 0];  % Remove tick marks
+% Labeling and formatting
+ylabel('Degree');
+xlabel('AD Species');
+title('Degree of Each AD-Species Mean ≥ 100, ≤ 50% Zeros, ≥ 60 STD');
+set(gca, 'FontSize', 14);
+box off;
+
+%% Load data
+data = readtable('C:\Users\brand\Desktop\AllCombineSpeciasAnalysis\Top100\Gephi File\nonadtest1.csv');
+
+% Optional: remove "AD_" prefix from species names
+data.Label = strrep(data.Label, 'AD_', '');
+
+% Remove "AD" label if present
+data(strcmpi(data.Label, 'Non-AD'), :) = [];
+
+% Sort data by Degree in descending order
+data = sortrows(data, 'Degree', 'descend');
+
+% Create vertical bar plot
+figure;
+bar(data.Degree, 'FaceColor', [0.2 0.4 0.6]);  % Custom color
+
+% Set x-axis labels as species names
+xticks(1:height(data));
+xticklabels(data.Label);
+xtickangle(45);  % Rotate x-axis labels for readability
+ax = gca;  % Get current axis handle
+ax.TickLength = [0 0];  % Remove tick marks
+% Labeling and formatting
+ylabel('Degree');
+xlabel('AD Species');
+title('Degree of Each Non-AD Species Mean ≥ 100, ≤ 50% Zeros, ≥ 60 STD');
+set(gca, 'FontSize', 14);
+box off;
