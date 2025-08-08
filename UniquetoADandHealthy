@@ -1,250 +1,311 @@
-import pandas as pd
-import numpy as np
-from scipy.stats import pearsonr
-from collections import Counter
-from tqdm import tqdm
+% === Load Data ===
+ad_degrees = readtable('C:\Users\brand\Desktop\AllCombineSpeciasAnalysis\Test 4\Gephi\gephi_AD_weighted_species.csv');
+features = readtable('C:\Users\brand\Desktop\AllCombineSpeciasAnalysis\Test 4\top_10_features_AD_combined_species.csv');
+sig_bacteria = readtable('C:\Users\brand\Desktop\AllCombineSpeciasAnalysis\Test 4\Significant_Species_Combined_vs_Healthy.csv');
+beta_div_similar = readtable('C:\Users\brand\Desktop\AllCombineSpeciasAnalysis\Test 4\Beta Diversity\Top10_STD_Similar_Plot_Data.csv');
+beta_div_dissimilar = readtable('C:\Users\brand\Desktop\AllCombineSpeciasAnalysis\Test 4\Beta Diversity\Top10_STD_Dissimilar_Plot_Data.csv');
 
-# ======= 1. Load the CSV File =======
-file_path = r"C:\Users\brand\Desktop\AllCombineSpeciasAnalysis\Top100\Test10.560100.xlsx"
-data = pd.read_excel(file_path)
+% === Filter out "AD" as a node ===
+mask = ~strcmpi(ad_degrees.Source, 'AD') & ~strcmpi(ad_degrees.Target, 'AD');
+ad_base = ad_degrees(mask, :);
 
+% === Compute Weighted Degree ===
+biomarkers = unique([ad_base.Source; ad_base.Target]);
+weighted_degree = zeros(size(biomarkers));
+for i = 1:length(biomarkers)
+    biom = biomarkers{i};
+    mask_src = strcmp(ad_base.Source, biom);
+    mask_tgt = strcmp(ad_base.Target, biom);
+    weighted_degree(i) = sum(ad_base.Weight(mask_src)) + sum(ad_base.Weight(mask_tgt));
+end
+ad_degree_table = table(biomarkers, weighted_degree, 'VariableNames', {'Biomarker', 'Weighted_Degree'});
+ad_degree_table = sortrows(ad_degree_table, 'Weighted_Degree', 'descend');
 
-# Separate features and target variable
-X = pd.DataFrame(data.drop(columns=['species', 'label', 'Source']))
-y = data['label']  # Target: 0 = Healthy, 1 = AD
+% === Clean biomarker names for matching ===
+clean_names = regexprep(ad_degree_table.Biomarker, '\s+\(RNA\)|\s+\(DNA\)', '');
+clean_names = lower(strtrim(clean_names));
 
-# Extract biomarker names
-biomarker_names = X.columns.tolist()
+% === Create lookup sets ===
+features_set = lower(strtrim(string(features{:,1})));
+sig_set = lower(strtrim(string(sig_bacteria{:,1})));
+% Define inline cleaning
+beta_div_similar.Properties.VariableNames
+head(beta_div_similar)
+clean_beta_sim = lower(strtrim(regexprep(string(beta_div_similar{:,1}), '\s+\(RNA\)|\s+\(DNA\)', '')));
+clean_beta_dissim = lower(strtrim(regexprep(string(beta_div_dissimilar{:,1}), '\s+\(RNA\)|\s+\(DNA\)', '')));
 
-# Identify AD and Healthy biomarkers
-ad_biomarkers = set(X.loc[y == 1].columns[(X.loc[y == 1] != 0).any()])
+% Assign
+beta_similar_set = clean_beta_sim;
+beta_dissimilar_set = clean_beta_dissim;
 
-def compute_significant_correlations(df,group_label, p_threshold=0.05):
-    sources, targets, p_values = [], [], []
-    correlations = []
-    diagnosis_flags, data_types, groups = [], [], []
-    biomarker_names = df.columns.tolist()
-    biomatrix = df.to_numpy()
-    num_biomarkers = len(biomarker_names)
-    for i in tqdm(range(num_biomarkers), desc="Correlating pairs"):
-        for j in range(i + 1, num_biomarkers):
-            # Skip constant columns
-            if np.all(biomatrix[:, i] == biomatrix[0, i]) or np.all(biomatrix[:, j] == biomatrix[0, j]):
-                continue
+% === Assign Colors ===
+colors = strings(length(clean_names),1);
+for i = 1:length(clean_names)
+    name = clean_names{i};
+    in_feat = any(strcmp(name, features_set));
+    in_sig = any(strcmp(name, sig_set));
+    in_sim = any(strcmp(name, beta_similar_set));
+    in_dissim = any(strcmp(name, beta_dissimilar_set));
+    
+        
+      if in_sig && (in_sim || in_dissim)
+        colors(i) = "black";
+    elseif in_feat && in_sig
+        colors(i) = "blue";
+    elseif in_feat && (in_sim || in_dissim)
+        colors(i) = "pink";
+    elseif in_sim
+        colors(i) = "cyan";
+    elseif in_dissim
+        colors(i) = "orange";
+    elseif in_feat
+        colors(i) = "purple";
+    elseif in_sig
+        colors(i) = "green";
+    else
+        colors(i) = "gray";
+    end
+end
 
-            r, p = pearsonr(biomatrix[:, i], biomatrix[:, j])
-            if p < p_threshold:
-                correlations.append(r)
-                biomarker_1 = biomarker_names[i]
-                biomarker_2 = biomarker_names[j]
-                sources.append(biomarker_1)
-                targets.append(biomarker_2)
-                p_values.append(p)
+% === Take Top 20 ===
+topN = 20;
+top_table = ad_degree_table(1:topN, :);
+top_color_names = colors(1:topN);
 
-                # Label data type
-                b1_is_mt = biomarker_1.startswith("mt_")
-                b2_is_mt = biomarker_2.startswith("mt_")
-                if b1_is_mt and b2_is_mt:
-                    data_type = "RNA"
-                elif not b1_is_mt and not b2_is_mt:
-                    data_type = "MAG"
-                else:
-                    data_type = "Mixed"
+% === Color Mapping ===
+color_map = containers.Map( ...
+    {'black', 'purple', 'green', 'orange', 'gray', 'blue', 'pink', 'cyan'}, ...
+    {[0 0 0], [0.5 0 0.5], [0 0.5 0], [1 0.5 0], ...
+     [0.5 0.5 0.5], [0 0 1], [1 0.41 0.71], [0 1 1]} ...
+);
 
-                data_types.append(data_type)
+bar_colors = zeros(topN,3);
+for i = 1:topN
+    bar_colors(i,:) = color_map(top_color_names(i));
+end
+disp(top_table.Biomarker)
 
-                # Diagnosis flag: AD = 1, Healthy = 0
-                diagnosis_flag = 1 if group_label.upper() == "AD" else 0
-                diagnosis_flags.append(diagnosis_flag)
-                groups.append(group_label)
+% === Create Bar Plot ===
+figure;
+b = bar(top_table.Weighted_Degree, 'FaceColor','flat');
+b.CData = bar_colors;
+b.Annotation.LegendInformation.IconDisplayStyle = 'off';
 
-    return pd.DataFrame({
-        'Biomarker_1': sources,
-        'Biomarker_2': targets,
-        'P_Value': p_values,
-        'Correlation': correlations,
-        'Diagnosis': diagnosis_flags,
-        'Group': groups,
-        'Data_Type': data_types
-    })
+set(gca, 'XTick', 1:topN);
+short_labels = regexprep(top_table.Biomarker, '\s+\(RNA\)|\s+\(DNA\)', ''); % Remove "(RNA)" and "(DNA)"
+short_labels = regexprep(short_labels, '^mt_', '');  % Remove "mt_" prefix
+short_labels = regexprep(short_labels, '^mg_|^mp_|^mb_|^mc_|^ms_|^mv_|^mi_', '');  % Remove other prefixes if needed
+short_labels = strrep(short_labels, 'candidate division TM7 single-cell isolate TM7a', 'TM7a');  % Optional
+short_labels = string(short_labels);
+short_labels(~contains(lower(short_labels), 'dna')) = short_labels(~contains(lower(short_labels), 'dna')) + " (DNA)";
 
-# ======= 3. Run for AD and Healthy Groups =======
-ad_df = X[y == 1]
-healthy_df = X[y == 0]
+% === Set axis and labels ===
+ ax = gca;
+    ax.Position = [0.09  0.06  0.9  0.9];   % lower bottom to give space for larger labels
+    ax.FontSize = 15;                        % increase tick‐label size
+    ax.TickLength = [0 0];
+    set(ax, ...
+        'XTick', 1:height(top_table), ...
+        'XTickLabel', short_labels, ...
+        'XTickLabelRotation', 55);
+% Set log scale for Y axis
+set(ax, 'YScale', 'log')
 
-ad_results = compute_significant_correlations(ad_df, 'AD')
-healthy_results = compute_significant_correlations(healthy_df, 'Healthy')
+% Axis labels and title
+xlabel('AD Species', 'FontSize', 15)  
+ylabel('P Value', 'FontSize', 15)
+%title('Top 20 Species in AD Corelation Network', 'FontSize', 15)
 
-# ======= 4. Combine and Save =======
-combined_results = pd.concat([ad_results, healthy_results], ignore_index=True)
+% === Add Legend ===
+hold on
+% === Add Legend ===
+hold on
+blackPatch = patch(NaN, NaN, [0 0 0]);
+purplePatch = patch(NaN, NaN, [0.5 0 0.5]);
+greenPatch = patch(NaN, NaN, [0 0.5 0]);
+orangePatch = patch(NaN, NaN, [1 0.5 0]);
+grayPatch = patch(NaN, NaN, [0.5 0.5 0.5]);
+cyanPatch = patch(NaN, NaN, [0 1 1]);
+lgd = legend([blackPatch, purplePatch, greenPatch, cyanPatch, orangePatch, grayPatch], ...
+    {'Significant + STD Beta Similar', 'Top 10 Feature', ...
+     'Significant Bacteria', 'Top 10 STD Beta Similar', 'Top 10 STD Beta Dissimilar', 'Not Significant'}, ...
+    'Orientation', 'horizontal', ...
+    'Location', 'southoutside', ...
+    'FontSize', 15, ...
+    'Box', 'off');
 
-output_path = r"C:\Users\brand\Desktop\biomarker_AD_vs_Healthy_edges_species_p01.csv"
-combined_results.to_csv(output_path, index=False)
+grid off                       % Remove grid lines
+box off                        % Remove axis box border
+%% === Load Edge List (Exclude Disease Node) ===
+corr_data = readtable('C:\Users\brand\Desktop\AllCombineSpeciasAnalysis\Test 4\AD_combined_Species_Pearson_Correlations.csv');
+ad_edges = readtable('C:\Users\brand\Desktop\AllCombineSpeciasAnalysis\Test 4\Gephi\gephi_AD_weighted_species.csv');
+biomarker_edges = ad_edges(~strcmpi(ad_edges.Target, 'AD'), :);
 
-print(f"File saved successfully at: {output_path}")
-print(" Preview of results:")
-print(combined_results.head())
+% === Count Total Connections ===
+source_counts = groupcounts(biomarker_edges.Source);
+target_counts = groupcounts(biomarker_edges.Target);
+all_nodes = [biomarker_edges.Source; biomarker_edges.Target];
+[unique_nodes, ~, idx] = unique(all_nodes);
+total_counts = accumarray(idx, 1);
 
-# Count appearances in significant pairs
-ad_biomarker_counts = Counter(ad_results['Biomarker_1']) + Counter(ad_results['Biomarker_2'])
+% Clean names for reliable matching
+% Clean biomarker names (remove punctuation, trim, lowercase)
+corr_names = lower(strtrim(regexprep(string(corr_data.Biomarker), '[^\w\s]', '')));
 
-# Convert to DataFrame for sorting
-ad_biomarker_counts_df = pd.DataFrame.from_dict(ad_biomarker_counts, orient='index', columns=['Count'])
-ad_biomarker_counts_df = ad_biomarker_counts_df.sort_values(by='Count', ascending=False)
+disp(corr_data.Properties.VariableNames)
 
-# Preview top biomarkers associated with AD (by frequency in significant pairs)
-print(ad_biomarker_counts_df.head(10))
+% Extract Pearson correlation values from the correct column
+corr_values = corr_data.Pearson_Correlation;  %
 
-# Filter separately
-# === Step 1: Create edge sets for AD and Healthy ===
-ad_edges_set = set([tuple(sorted(edge)) for edge in ad_results[["Biomarker_1", "Biomarker_2"]].values])
-healthy_edges_set = set([tuple(sorted(edge)) for edge in healthy_results[["Biomarker_1", "Biomarker_2"]].values])
+% Build map from biomarker name → correlation value
+corr_map = containers.Map(corr_names, corr_values);
 
-# === Step 2: Get unique-to-AD edges ===
-unique_to_ad = ad_edges_set - healthy_edges_set
+% === Load Node Table and Clean Labels ===
+df = readtable('C:\Users\brand\Desktop\AllCombineSpeciasAnalysis\Test 4\Gephi\uniquetoad.csv');
+df.Label = strtrim(string(df.Id));
+% Label species as DNA if not RNA or mitochondrial
+is_rna = contains(df.Label, '(RNA)', 'IgnoreCase', true);
+is_mt  = contains(df.Label, 'mt', 'IgnoreCase', true);
 
-# === Step 3: Filter ad_results to keep only unique edges ===
-unique_ad_df = ad_results.copy()
-unique_ad_df["Edge_Tuple"] = unique_ad_df.apply(
-    lambda row: tuple(sorted([row["Biomarker_1"], row["Biomarker_2"]])), axis=1
-)
-unique_ad_df = unique_ad_df[unique_ad_df["Edge_Tuple"].isin(unique_to_ad)]
+for i = 1:height(df)
+    if ~is_rna(i) && ~is_mt(i)
+        df.Label(i) = df.Label(i) + " (DNA)";
+    end
+end
 
+% Remove (RNA)/(DNA), punctuation, lowercase, etc.
+df.CleanId = lower(regexprep(df.Label, '\s+\(RNA\)|\s+\(DNA\)', ''));
+df.CleanId = regexprep(df.CleanId, '[^\w\s]', '');
+df.CleanId = strtrim(regexprep(df.CleanId, '\s+', ' '));
 
-# === Get unique-to-Healthy edges ===
-unique_to_healthy = healthy_edges_set - ad_edges_set
+% Exclude 'AD'
+df = df(~strcmpi(df.CleanId, 'ad'), :);
 
-# === Filter healthy_results to keep only unique edges ===
-unique_healthy_df = healthy_results.copy()
-unique_healthy_df["Edge_Tuple"] = unique_healthy_df.apply(
-    lambda row: tuple(sorted([row["Biomarker_1"], row["Biomarker_2"]])), axis=1
-)
-unique_healthy_df = unique_healthy_df[unique_healthy_df["Edge_Tuple"].isin(unique_to_healthy)]
+% === Load Reference Files and Convert to Sets ==
+features = readtable('C:\Users\brand\Desktop\AllCombineSpeciasAnalysis\Test 4\top_10_features_AD_combined_species.csv');
+sig_bacteria = readtable('C:\Users\brand\Desktop\AllCombineSpeciasAnalysis\Test 4\Significant_Species_Combined_vs_Healthy.csv');
+beta_div_similar = readtable('C:\Users\brand\Desktop\AllCombineSpeciasAnalysis\Test 4\Beta Diversity\Top10_STD_Similar_Plot_Data.csv');
+beta_div_dissimilar = readtable('C:\Users\brand\Desktop\AllCombineSpeciasAnalysis\Test 4\Beta Diversity\Top10_STD_Dissimilar_Plot_Data.csv');
 
-# === Create sorted edge tuples for reliable comparison ===
-def edge_tuple(row):
-    return tuple(sorted([row["Biomarker_1"], row["Biomarker_2"]]))
+clean_set = @(x) lower(strtrim(regexprep(regexprep(string(x), '[^\w\s]', ''), '\s+', ' ')));
+feature_set = clean_set(features{:,1});
+sig_set = clean_set(sig_bacteria{:,1});
+beta_similar_set = clean_set(beta_div_similar{:,1});
+beta_dissimilar_set = clean_set(beta_div_dissimilar{:,1});
 
-ad_results["Edge_Tuple"] = ad_results.apply(edge_tuple, axis=1)
-healthy_results["Edge_Tuple"] = healthy_results.apply(edge_tuple, axis=1)
+% === Assign Colors ===
+df.Color = strings(height(df),1);
+for i = 1:height(df)
+    biom = df.CleanId(i);
+    in_feat = any(strcmp(biom, feature_set));
+    in_sig = any(strcmp(biom, sig_set));
+    in_sim = any(strcmp(biom, beta_similar_set));
+    in_dissim = any(strcmp(biom, beta_dissimilar_set));
 
-# === Build sets of edges (excluding disease node links) ===
-ad_edges_set = set(ad_results["Edge_Tuple"])
-healthy_edges_set = set(healthy_results["Edge_Tuple"])
-# === Find unique and shared edges ===
-unique_to_ad = ad_edges_set - healthy_edges_set
-unique_to_healthy = healthy_edges_set - ad_edges_set
+    if in_sig && (in_sim || in_dissim)
+        df.Color(i) = "black";
+    elseif in_feat && in_sig
+        df.Color(i) = "blue";
+    elseif in_feat && (in_sim || in_dissim)
+        df.Color(i) = "pink";
+    elseif in_sim
+        df.Color(i) = "cyan";
+    elseif in_dissim
+        df.Color(i) = "orange";
+    elseif in_feat
+        df.Color(i) = "purple";
+    elseif in_sig
+        df.Color(i) = "green";
+    else
+        df.Color(i) = "gray";
+    end
+end
 
-# === STEP 1: Identify biomarkers involved in AD and Healthy edges ===
-healthy_biomarkers = set([b for edge in healthy_edges_set for b in edge])
+% === Define Metrics to Plot ===
+metrics = {
+    'EigenCentrality', 
+    'Clustering', 
+    'Triangles', 
+    'ClosenessCentrality'
+};
 
-# === STEP 2: Find shared biomarkers (present in both AD and Healthy) ===
-shared_biomarkers = ad_biomarkers & healthy_biomarkers
-print(f"Shared biomarkers (excluded from both groups): {len(shared_biomarkers)}")
+% === Color Mapping ===
+color_map = containers.Map( ...
+    {'black', 'purple', 'green', 'orange', 'gray', 'blue', 'pink', 'cyan'}, ...
+    {[0 0 0], [0.5 0 0.5], [0 0.5 0], [1 0.5 0], ...
+     [0.5 0.5 0.5], [0 0 1], [1 0.41 0.71], [0 1 1]} ...
+);
+all_top_species = [];
+% === Plot Loop ===
+for m = 1:length(metrics)
+    metric = metrics{m};
+   figure;
+   [~, idx] = sort(df.(metric), 'descend');
+    sorted_df = df(idx, :);
+    sorted_df = sorted_df(1:min(25, height(sorted_df)), :);
+    if strcmp(metric, 'Triangles')
+    disp('=== Top 25 Triangle Counts for AD Species ===');
+    triangle_table = sorted_df(:, {'Label', 'Triangles', 'Color'});
+    disp(triangle_table);
 
+    % Save to CSV on Desktop
+    output_path = 'C:\Users\brand\Desktop\AD_Species_Top25_TriangleCounts.csv';
+    writetable(triangle_table, output_path);
+    fprintf('✅ Triangle counts saved to: %s\n', output_path);
+    end
+    all_top_species = [all_top_species; sorted_df.Label];
+    % Convert to table for counting
+   
+    % === Initialize bar color array ===
+    bar_colors = zeros(height(sorted_df), 3);
+    for i = 1:height(sorted_df)
+        bar_colors(i,:) = color_map(sorted_df.Color{i});
+    end
+    b = bar(sorted_df.(metric), 'FaceColor', 'flat');
+    b.CData = bar_colors;
+    b.Annotation.LegendInformation.IconDisplayStyle = 'off';
+ 
+     % Adjust axes position and font size
+    ax = gca;
+    ax.Position = [0.08  0.1  0.9  0.8];   % lower bottom to give space for larger labels
+    ax.FontSize = 15;                        % increase tick‐label size
+    ax.TickLength = [0 0];
+    set(ax, ...
+        'XTick', 1:height(sorted_df), ...
+        'XTickLabel', sorted_df.Label, ...
+        'XTickLabelRotation', 65);
+    % === Labels and title ===
+    %title([upper(metric(1)) metric(2:end) ' From Top 25 AD Species'], 'FontSize', 15)
+    xlabel('AD Species', 'FontSize', 15)
+    ylabel(strrep(metric, '_', ' '), 'FontSize', 15)
+    box off
+hold on
+blackPatch = patch(NaN, NaN, [0 0 0]);
+purplePatch = patch(NaN, NaN, [0.5 0 0.5]);
+greenPatch = patch(NaN, NaN, [0 0.5 0]);
+orangePatch = patch(NaN, NaN, [1 0.5 0]);
+grayPatch = patch(NaN, NaN, [0.5 0.5 0.5]);
+cyanPatch = patch(NaN, NaN, [0 1 1]);
 
-# === Helper Functions ===
-def edge_tuple(row):
-    return tuple(sorted([row["Biomarker_1"], row["Biomarker_2"]]))
+lgd = legend([blackPatch, purplePatch, greenPatch, cyanPatch, orangePatch, grayPatch], ...
+    {'Significant + STD Beta Similar ', 'Top 10 Feature', ...
+     'Significant Bacteria', 'Top 10 STD Beta Similar', 'Top 10 STD Beta Dissimilar', 'Not Significant'}, ...
+    'Orientation', 'horizontal', ...
+    'Location', 'southoutside', ...
+    'FontSize', 15, ...
+    'Box', 'off');
 
+end
+% === Frequency Count After Plotting ===
+[unique_species, ~, species_idx] = unique(all_top_species);
+species_counts = accumarray(species_idx, 1);
 
-def append_rna_mag(name):
-    name = str(name).strip()
-    return f"{name} (RNA)" if name.startswith("mt_") else f"{name} (MAG)"
+% Create and sort summary table
+species_summary = table(unique_species, species_counts, ...
+    'VariableNames', {'Species', 'Count'});
+species_summary = sortrows(species_summary, 'Count', 'descend');
 
+% Display Result
+disp('=== Species Appearing Most Frequently Across Top 25 Metrics ===');
+disp(species_summary);
 
-# === Add Edge_Tuple Columns ===
-ad_results["Edge_Tuple"] = ad_results.apply(edge_tuple, axis=1)
-healthy_results["Edge_Tuple"] = healthy_results.apply(edge_tuple, axis=1)
-
-# === Build Edge Sets ===
-ad_edges_set = set(ad_results["Edge_Tuple"])
-healthy_edges_set = set(healthy_results["Edge_Tuple"])
-
-
-# === Shared Biomarkers for Logging Only ===
-ad_biomarkers = set([b for edge in ad_edges_set for b in edge])
-healthy_biomarkers = set([b for edge in healthy_edges_set for b in edge])
-shared_biomarkers = ad_biomarkers & healthy_biomarkers
-print(f"Shared biomarkers (excluded from both groups): {len(shared_biomarkers)}")
-
-
-# Filter to unique healthy edges only
-healthy_filtered = healthy_results[healthy_results["Edge_Tuple"].isin(unique_to_healthy)].copy()
-
-# Sort by P-Value (most significant first)
-healthy_filtered = healthy_filtered.sort_values(by="P_Value", ascending=True)
-
-# Keep only the top N most significant edges
-healthy_filtered = healthy_filtered.head()
-# === Function to Process and Export Edge Data ===
-def process_group(df, unique_edges, disease_name, output_path):
-    # Filter to unique edges
-    unique_edges_df = df[df["Edge_Tuple"].isin(unique_edges)].copy()
-
-    # Apply RNA/DNA labels
-    unique_edges_df["Biomarker_1"] = unique_edges_df["Biomarker_1"].apply(append_rna_mag)
-    unique_edges_df["Biomarker_2"] = unique_edges_df["Biomarker_2"].apply(append_rna_mag)
-
-    # Recompute Edge_Tuple after renaming
-    unique_edges_df["Edge_Tuple"] = unique_edges_df.apply(edge_tuple, axis=1)
-
-    # Compute weight
-    unique_edges_df["Weight"] = 1 / (unique_edges_df["P_Value"] + 1e-10)
-
-    # Build biomarker-to-biomarker edges
-    # In process_group, keep Correlation too:
-    base_edges = unique_edges_df[["Biomarker_1", "Biomarker_2", "Correlation", "Weight"]].copy()
-    base_edges.columns = ["Source", "Target", "Correlation", "Weight"]
-    base_edges["Type"] = "Undirected"
-
-    # Build biomarker-to-disease edges
-    biomarker_nodes = set(base_edges["Source"]).union(set(base_edges["Target"]))
-    disease_links = pd.DataFrame({
-        "Source": list(biomarker_nodes),
-        "Target": disease_name,
-        "Type": "Undirected"
-    })
-
-    # Combine both and export
-    combined_edges = pd.concat([base_edges, disease_links], ignore_index=True)
-    combined_edges.to_csv(output_path, index=False)
-    print(f"✅ Gephi-ready {disease_name} edge list saved to: {output_path}")
-
-from collections import Counter
-
-# === Count appearance of biomarkers in all positive/negative edges ===
-positive_edges = combined_results[combined_results['Correlation'] > 0]
-negative_edges = combined_results[combined_results['Correlation'] < 0]
-
-# === Count appearance ===
-pos_counts = Counter(positive_edges['Biomarker_1']) + Counter(positive_edges['Biomarker_2'])
-neg_counts = Counter(negative_edges['Biomarker_1']) + Counter(negative_edges['Biomarker_2'])
-
-# === Convert to DataFrame and sort ===
-pos_df = pd.DataFrame.from_dict(pos_counts, orient='index', columns=['Positive_Edge_Count'])
-neg_df = pd.DataFrame.from_dict(neg_counts, orient='index', columns=['Negative_Edge_Count'])
-
-# Sort and save
-pos_df = pos_df.sort_values(by='Positive_Edge_Count', ascending=False)
-neg_df = neg_df.sort_values(by='Negative_Edge_Count', ascending=False)
-
-# Save files
-pos_df.to_csv(r"C:\Users\brand\Desktop\top_positive_species_biomarkers_ALL_AD.csv")
-neg_df.to_csv(r"C:\Users\brand\Desktop\top_negative_species_biomarkers_ALL_AD.csv")
-
-# === Export AD edges ===
-process_group(
-    df=ad_results,
-    unique_edges=unique_to_ad,
-    disease_name="AD",
-    output_path=r"C:\Users\brand\Desktop\gephi_AD_weighted_species1.csv"
-)
-
-# Process and save the reduced Healthy edge list
-process_group(
-    df=healthy_filtered,
-    unique_edges=set(healthy_filtered["Edge_Tuple"]),
-    disease_name="Healthy",
-    output_path=r"C:\Users\brand\Desktop\gephi_healthy_weighted_species_edges1.csv"
-)
