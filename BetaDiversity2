@@ -1,0 +1,211 @@
+import pandas as pd
+import numpy as np
+from scipy.spatial.distance import pdist, squareform
+import matplotlib.pyplot as plt
+import seaborn as sns
+from tqdm import tqdm
+
+# === Load data ===
+file_path = r"C:\Users\brand\Desktop\ADFilteredSpeciesTest1\Test 4\filtered_mean20_std30.xlsx"
+data = pd.read_excel(file_path)
+
+# === Extract feature matrix and labels ===
+X = data.drop(columns=['species', 'label', 'Source'])  # Microbial features
+y = data['label']  # 0 = Healthy, 1 = AD
+
+# === Compute Bray-Curtis distance between subjects ===
+dist_matrix = pdist(X.values, metric='braycurtis')  # Condensed distance matrix
+square_dist = squareform(dist_matrix)  # Square matrix (n_samples x n_samples)
+
+# === Save Bray-Curtis matrix to file ===
+dist_df = pd.DataFrame(square_dist, index=data.index, columns=data.index)
+dist_df.to_csv(r"C:\Users\brand\Desktop\subject_braycurtis_matrix_1.csv")
+print("✅ Bray-Curtis subject matrix saved.")
+
+# Assuming `square_dist` is your (n_samples x n_samples) Bray-Curtis matrix from earlier
+
+# Compute average Bray-Curtis per subject
+avg_dissimilarity = np.mean(square_dist, axis=1)
+
+# Create DataFrame for plotting
+subject_ids = [f"Sample_{i}" for i in range(len(avg_dissimilarity))]
+avg_df = pd.DataFrame({
+    "Subject": subject_ids,
+    "Avg_BrayCurtis": avg_dissimilarity,
+    "Diagnosis": y.replace({0: "Healthy", 1: "AD"})
+})
+
+# Plot as bar graph
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+plt.figure(figsize=(16, 6))
+sns.barplot(data=avg_df, x="Subject", y="Avg_BrayCurtis", hue="Diagnosis", dodge=False)
+plt.xticks(rotation=90)
+plt.title("Average Bray-Curtis Dissimilarity per Subject")
+plt.ylabel("Average Bray-Curtis")
+plt.xlabel("Subject")
+plt.tight_layout()
+plt.show()
+# Export average Bray-Curtis dissimilarity per subject to CSV
+avg_df.to_csv(r"C:\Users\brand\Desktop\avg_braycurtis_per_subject.csv", index=False)
+print("✅ Average Bray-Curtis dissimilarity per subject saved.")
+
+# --- Filter to AD subjects only ---
+X_ad = X[y == 1].copy()
+X_vals = X_ad.values.astype(float)          # AD subjects × species
+species = X_ad.columns.to_numpy()
+
+n, p = X_vals.shape
+if n < 2:
+    raise ValueError(f"Need at least 2 AD subjects to compute pairwise dissimilarity drivers. Found n={n}.")
+
+species_contrib_sum = np.zeros(p, dtype=float)
+pair_count = 0
+
+# --- Loop over all unique AD subject pairs ---
+for i in range(n):
+    xi = X_vals[i]
+    for j in range(i + 1, n):
+        xj = X_vals[j]
+
+        denom = np.sum(xi + xj)
+        if denom == 0:
+            continue  # skip empty pairs (both all zeros)
+
+        # Your original "Bray-Curtis-inspired" per-species contribution
+        contrib = np.abs(xi - xj) / denom
+
+        species_contrib_sum += contrib
+        pair_count += 1
+
+species_contrib_mean = species_contrib_sum / max(pair_count, 1)
+
+species_driver_ad_df = (
+    pd.DataFrame({
+        "Species": species,
+        "Mean_BrayCurtis_Contribution_ADonly": species_contrib_mean
+    })
+    .sort_values("Mean_BrayCurtis_Contribution_ADonly", ascending=False)
+)
+
+out_path_ad = r"C:\Users\brand\Desktop\species_driving_beta_diversity_AD_only.csv"
+species_driver_ad_df.to_csv(out_path_ad, index=False)
+
+print("✅ Saved:", out_path_ad)
+print("AD-only pair count used:", pair_count)
+print(species_driver_ad_df.head(20))
+# --- Filter to Healthy subjects only ---
+X_healthy = X[y == 0].copy()
+X_vals = X_healthy.values.astype(float)     # Healthy subjects × species
+species = X_healthy.columns.to_numpy()
+
+n, p = X_vals.shape
+if n < 2:
+    raise ValueError(f"Need at least 2 Healthy subjects to compute pairwise dissimilarity drivers. Found n={n}.")
+
+species_contrib_sum = np.zeros(p, dtype=float)
+pair_count = 0
+
+# --- Loop over all unique Healthy subject pairs ---
+for i in range(n):
+    xi = X_vals[i]
+    for j in range(i + 1, n):
+        xj = X_vals[j]
+
+        denom = np.sum(xi + xj)
+        if denom == 0:
+            continue  # skip empty pairs (both all zeros)
+
+        # Your original "Bray-Curtis-inspired" per-species contribution
+        contrib = np.abs(xi - xj) / denom
+
+        species_contrib_sum += contrib
+        pair_count += 1
+
+species_contrib_mean = species_contrib_sum / max(pair_count, 1)
+
+species_driver_healthy_df = (
+    pd.DataFrame({
+        "Species": species,
+        "Mean_BrayCurtis_Contribution_HealthyOnly": species_contrib_mean
+    })
+    .sort_values("Mean_BrayCurtis_Contribution_HealthyOnly", ascending=False)
+)
+
+out_path_healthy = r"C:\Users\brand\Desktop\species_driving_beta_diversity_Healthy_only.csv"
+species_driver_healthy_df.to_csv(out_path_healthy, index=False)
+
+print("✅ Saved:", out_path_healthy)
+print("Healthy-only pair count used:", pair_count)
+print(species_driver_healthy_df.head(20))
+# Compute standard deviation per species
+feature_variability = X.std().sort_values()
+X_vals = X.values.astype(float)     # subjects × species
+species = X.columns.to_numpy()
+
+n, p = X_vals.shape
+species_contrib_sum = np.zeros(p, dtype=float)
+pair_count = 0
+
+for i in range(n):
+    xi = X_vals[i]
+    for j in range(i+1, n):
+        xj = X_vals[j]
+        denom = np.sum(xi + xj)
+        if denom == 0:
+            continue  # skip empty pairs
+        contrib = np.abs(xi - xj) / denom   # per-species contribution for this pair
+        species_contrib_sum += contrib
+        pair_count += 1
+
+species_contrib_mean = species_contrib_sum / max(pair_count, 1)
+
+species_driver_df = pd.DataFrame({
+    "Species": species,
+    "Mean_BrayCurtis_Contribution": species_contrib_mean
+}).sort_values("Mean_BrayCurtis_Contribution", ascending=False)
+
+out_path = r"C:\Users\brand\Desktop\species_driving_subject_beta_diversity.csv"
+species_driver_df.to_csv(out_path, index=False)
+
+print("✅ Saved:", out_path)
+print(species_driver_df.head(20))
+# Plot
+import matplotlib.pyplot as plt
+plt.figure(figsize=(12, 5))
+feature_variability.plot(kind='bar')
+plt.title("Standard Deviation of Each Microbial Feature Across Subjects")
+plt.ylabel("Standard Deviation")
+plt.xlabel("Microbial Feature")
+plt.xticks(rotation=90)  # Rotate x-axis labels vertically
+plt.tight_layout()
+plt.show()
+# Export standard deviation per microbial feature to CSV
+feature_variability.to_csv(r"C:\Users\brand\Desktop\std_per_microbe_across_subjects.csv", header=['Standard_Deviation'])
+print("✅ Standard deviation per microbial feature saved.")
+
+
+# === Split data by diagnosis ===
+X_ad = X[y == 1]
+X_healthy = X[y == 0]
+
+# === Compute mean abundance of each species in AD and Healthy groups ===
+mean_ad = X_ad.mean()
+mean_healthy = X_healthy.mean()
+
+# === Create summary DataFrame without fold change ===
+dominance_df = pd.DataFrame({
+    'AD_mean': mean_ad,
+    'Healthy_mean': mean_healthy
+})
+dominance_df['Dominant_in'] = np.where(
+    dominance_df['AD_mean'] > dominance_df['Healthy_mean'],
+    'AD',
+    'Healthy'
+)
+
+# === Save to CSV ===
+dominance_df.to_csv(r"C:\Users\brand\Desktop\species_dominance_AD_vs_Healthy.csv")
+print("✅ Species dominance table saved.")
+
