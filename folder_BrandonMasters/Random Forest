@@ -1,0 +1,770 @@
+from sklearn.model_selection import LeaveOneGroupOut, GridSearchCV
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import accuracy_score, classification_report
+from sklearn.feature_selection import VarianceThreshold
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+import pandas as pd
+import numpy as np
+import os
+from scipy.stats import pearsonr
+from sklearn.tree import DecisionTreeClassifier, plot_tree
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+from sklearn.metrics import roc_curve, roc_auc_score
+import shap
+plt.rcParams['font.family'] = 'Times New Roman'
+import matplotlib as mpl
+mpl.rcParams['font.family'] = 'Times New Roman'
+shap_outdir = r"C:\Users\brand\Desktop\ADFilteredSpeciesTest1\SHAP"
+os.makedirs(shap_outdir, exist_ok=True)
+
+# Load the dataset
+file_path = r"C:\Users\brand\Desktop\ADFilteredSpeciesTest1\Test 4\filtered_mean20_std30.xlsx"
+data = pd.read_excel(file_path)
+# === Remove the 'Averages' row ===
+
+# Define features (X), target (y), and groups (SubjectID)
+X = data.drop(columns=['label', 'species', 'Source',])
+y = data['label']
+groups = data['species']
+
+
+# Ask Question about using this
+param_grid = {
+    'n_estimators': [50, 100,],
+    'max_depth': [3, 5, 10],
+    'min_samples_split': [2, 5],
+    'min_samples_leaf': [1, 2],
+    'max_features': ['sqrt']
+}
+
+logo = LeaveOneGroupOut()
+
+# Initialize storage for results
+y_true = []
+y_pred = []
+y_probs = []
+fold_accuracies = []
+global_abs_shap = {}  # feature -> list of mean|shap| across folds
+oof_shap_values = []        # list of numpy arrays [n_test_i, n_features_i] per fold (optional, for beeswarm)
+oof_X_test_list = []         # matching X_test DataFrames per fold (optional, for beeswarm)
+oof_rows = []  # store one row per test sample (OOF prediction)
+fold_rows = []
+dt_fold_accuracies = []
+
+importances_output_dir = "decision_tree_contributions"
+os.makedirs(importances_output_dir, exist_ok=True)
+fold_id = 0
+import matplotlib
+matplotlib.use("Agg")  # fixes "main thread" Tkinter bug
+import matplotlib.pyplot as plt
+for train_idx, test_idx in logo.split(X, y, groups=groups):
+    fold_id += 1
+    print(f"\n=== Fold {fold_id} ===")
+    X_train_raw, X_test_raw = X.iloc[train_idx], X.iloc[test_idx]
+    y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
+    # Identify which group was held out in this fold
+    held_out_group = groups.iloc[test_idx].unique()
+    held_out_group = held_out_group[0] if len(held_out_group) > 0 else f"fold_{fold_id}"
+
+    # Step 1: VarianceThreshold
+    vt = VarianceThreshold(threshold=0.0)
+    X_train_vt = vt.fit_transform(X_train_raw)
+    X_test_vt = vt.transform(X_test_raw)
+    vt_features = X_train_raw.columns[vt.get_support()]
+
+    if len(vt_features) == 0:
+        print(f"Fold {fold_id}: no features survived VT — skipping.")
+        continue
+
+    # Rebuild DataFrames with only variance-thresholded features
+    X_train = pd.DataFrame(X_train_vt, columns=vt_features, index=X_train_raw.index)
+    X_test = pd.DataFrame(X_test_vt, columns=vt_features, index=X_test_raw.index)
+    # --- Train decision tree ---
+    dt = DecisionTreeClassifier(
+        max_depth=4,
+        min_samples_leaf=2,
+        class_weight="balanced",
+        random_state=42
+    )
+    dt.fit(X_train, y_train)
+
+    # --- Evaluate ---
+    dt_pred = dt.predict(X_test)
+    acc = accuracy_score(y_test, dt_pred)
+    dt_fold_accuracies.append(acc)
+
+    # GridSearchCV for hyperparameter tuning
+    rf_classifier = RandomForestClassifier(class_weight='balanced', random_state=42)
+    grid_search = GridSearchCV(rf_classifier, param_grid, scoring='roc_auc', cv=3, n_jobs=-1)
+    grid_search.fit(X_train, y_train)
+    best_params = grid_search.best_params_
+
+    # Train final model with best hyperparameters
+    optimized_rf_classifier = RandomForestClassifier(**best_params, random_state=42)
+    optimized_rf_classifier.fit(X_train, y_train)
+
+    # Evaluate on the test set
+    y_pred_fold = optimized_rf_classifier.predict(X_test)
+    y_probs_fold = optimized_rf_classifier.predict_proba(X_test)[:, 1]
+    # ---- OOF logging per held-out sample ----
+    test_meta = data.loc[X_test_raw.index, ['species', 'Source']].copy()  # include metadata you want
+    # (If you have a SubjectID column, include it too.)
+
+    for idx, yt, yp, pr in zip(X_test_raw.index, y_test.values, y_pred_fold, y_probs_fold):
+        oof_rows.append({
+            "index": idx,
+            "fold": fold_id,
+            "group_species": data.loc[idx, "species"],
+            "Source": data.loc[idx, "Source"] if "Source" in data.columns else None,
+            "y_true": int(yt),
+            "y_pred": int(yp),
+            "p_AD": float(pr),
+            "abs_margin_from_0.5": float(abs(pr - 0.5)),
+            "misclassified": int(yt != yp)
+        })
+
+    # Store results
+    y_pred.extend(y_pred_fold)
+    y_true.extend(y_test)
+    y_probs.extend(y_probs_fold)
+    fold_accuracies.append(accuracy_score(y_test, y_pred_fold))
+
+    background = X_train.sample(n=min(200, len(X_train)), random_state=42)
+    explainer = shap.Explainer(
+        optimized_rf_classifier,
+        masker=background,
+        algorithm="tree",
+        model_output="probability"  # 🔑 explains prob(AD)
+    )
+    shap_explanation = explainer(X_test)
+    shap_values = shap_explanation.values  # shape (n_samples, n_features)
+
+    # If SHAP returned per-class values, keep only AD class (index 1)
+    if shap_values.ndim == 3 and shap_values.shape[-1] == 2:
+        shap_values = shap_values[:, :, 1]  # -> (n_samples, n_features)
+
+    mean_abs = np.abs(shap_values).mean(axis=0)  # -> (n_features,)
+
+    # === Save per-fold SHAP summary ===
+    fold_shap_df = pd.DataFrame({
+        "Feature": vt_features,
+        "mean_abs_SHAP": mean_abs,
+        "fold": [fold_id] * len(vt_features)
+    }).sort_values("mean_abs_SHAP", ascending=False)
+    fold_csv_path = os.path.join(shap_outdir, f"fold_{fold_id}_SHAP.csv")
+    fold_shap_df.to_csv(fold_csv_path, index=False)
+
+    # === Save per-fold barplot ===
+    plt.figure(figsize=(10, 6))
+    plt.barh(fold_shap_df["Feature"].head(20)[::-1],
+             fold_shap_df["mean_abs_SHAP"].head(20)[::-1],
+             color="purple")
+    plt.xlabel("Mean |SHAP| (fold-level)")
+    plt.title(f"Top 20 features by SHAP — Fold {fold_id}")
+    plt.tight_layout()
+    plt.savefig(os.path.join(shap_outdir, f"fold_{fold_id}_SHAP_barplot.png"),
+                dpi=300, bbox_inches="tight")
+    plt.close()
+    print(f"[SHAP] Fold {fold_id}: saved per-fold SHAP results.")
+    oof_shap_values.append(shap_values)
+    oof_X_test_list.append(X_test.copy())
+    train_acc = optimized_rf_classifier.score(X_train, y_train)
+    test_acc = accuracy_score(y_test, y_pred_fold)
+
+    fold_rows.append({
+        "fold": fold_id,
+        "held_out_group": held_out_group,
+        "train_accuracy": train_acc,
+        "test_accuracy": test_acc,
+        "n_test": len(y_test)
+    })
+
+    # === Combine SHAP values across folds (OOF = out-of-fold) ===
+print("\n=== Building OOF prediction table ===")
+
+oof_df = pd.DataFrame(oof_rows)
+
+# --- Define outlier rules ---
+# Rule A: Misclassified samples
+misclf_df = oof_df[oof_df["misclassified"] == 1].copy()
+# ===============================
+# Identify bacteria driving misclassifications
+# ===============================
+
+misclassified_bacteria = []
+
+for fold_idx, (shap_vals, X_test) in enumerate(
+        zip(oof_shap_values, oof_X_test_list), start=1):
+
+    fold_misclf = misclf_df[misclf_df["fold"] == fold_idx]
+
+    if fold_misclf.empty:
+        continue
+
+    for _, row in fold_misclf.iterrows():
+        sample_idx = row["index"]
+
+        if sample_idx not in X_test.index:
+            continue
+
+        sv = shap_vals[X_test.index.get_loc(sample_idx)]
+        feature_names = X_test.columns
+
+        sample_shap_df = pd.DataFrame({
+            "bacteria": feature_names,
+            "shap_value": sv,
+            "abs_shap": np.abs(sv)
+        }).sort_values("abs_shap", ascending=False)
+
+        top_k = sample_shap_df.head(10).copy()
+        top_k["sample_index"] = sample_idx
+        top_k["species"] = data.loc[sample_idx, "species"]  # <-- ADD THIS
+        top_k["Source"] = data.loc[sample_idx, "Source"] if "Source" in data.columns else None
+        top_k["fold"] = fold_idx
+        top_k["true_label"] = row["y_true"]
+        top_k["pred_label"] = row["y_pred"]
+        top_k["p_AD"] = row["p_AD"]  # optional but useful
+
+        misclassified_bacteria.append(top_k)
+
+out_dir = r"C:\Users\brand\Desktop\ADFilteredSpeciesTest1\Test 4\Random Forest"
+os.makedirs(out_dir, exist_ok=True)
+
+misclf_bacteria_df = pd.concat(misclassified_bacteria, ignore_index=True)
+
+result = (
+    misclf_bacteria_df[
+        misclf_bacteria_df["species"] == "NAD129606HP"
+    ]
+    .sort_values("abs_shap", ascending=False)
+    .head(10)
+)
+
+# ✅ Save to the specified folder
+out_path = os.path.join(out_dir, "NAD129606HP_top10_SHAP_drivers.csv")
+result.to_csv(out_path, index=False)
+
+print(f"✅ Saved to: {out_path}")
+# Rule B: Low-confidence (close to 0.5). You can tune this threshold.
+# Example: within 0.10 of 0.5 => probs in [0.40, 0.60]
+lowconf_thresh = 0.10
+lowconf_df = oof_df[oof_df["abs_margin_from_0.5"] <= lowconf_thresh].copy()
+
+# Rule C: "Hard outliers" = misclassified AND low-confidence
+hard_df = oof_df[(oof_df["misclassified"] == 1) & (oof_df["abs_margin_from_0.5"] <= lowconf_thresh)].copy()
+
+# --- Print them nicely ---
+pd.set_option("display.max_rows", 200)
+pd.set_option("display.max_columns", 50)
+
+print(f"\nOutliers (misclassified): {len(misclf_df)}")
+print(misclf_df.sort_values(["abs_margin_from_0.5", "p_AD"]).head(50))
+
+print(f"\nOutliers (low-confidence within ±{lowconf_thresh:.2f} of 0.5): {len(lowconf_df)}")
+print(lowconf_df.sort_values(["abs_margin_from_0.5", "misclassified"], ascending=[True, False]).head(50))
+
+print(f"\nHard outliers (misclassified + low-confidence): {len(hard_df)}")
+print(hard_df.sort_values(["abs_margin_from_0.5"]).head(50))
+
+# --- Save to disk ---
+outlier_dir = os.path.join(shap_outdir, "outliers")
+os.makedirs(outlier_dir, exist_ok=True)
+
+oof_df.to_csv(os.path.join(outlier_dir, "OOF_all_predictions.csv"), index=False)
+misclf_df.to_csv(os.path.join(outlier_dir, "OOF_outliers_misclassified.csv"), index=False)
+lowconf_df.to_csv(os.path.join(outlier_dir, f"OOF_outliers_lowconf_pm{lowconf_thresh:.2f}.csv"), index=False)
+hard_df.to_csv(os.path.join(outlier_dir, f"OOF_outliers_hard_pm{lowconf_thresh:.2f}.csv"), index=False)
+
+print(f"\nSaved outlier tables to: {outlier_dir}")
+
+print("\n=== Aggregating global SHAP results ===")
+all_shap = np.vstack(oof_shap_values)
+all_X = pd.concat(oof_X_test_list, axis=0)
+# Output folders
+shap_outdir = r"C:\Users\brand\Desktop\ADFilteredSpeciesTest1\SHAP"
+os.makedirs(shap_outdir, exist_ok=True)
+
+cv_dir = os.path.join(shap_outdir, "cv_plots")
+os.makedirs(cv_dir, exist_ok=True)
+fold_acc_df = pd.DataFrame(fold_rows)
+fold_acc_df.to_csv(os.path.join(cv_dir, "train_vs_test_accuracy_per_fold.csv"),
+                   index=False)
+plt.figure(figsize=(8, 5.5))
+
+plt.plot(
+    fold_acc_df["fold"],
+    fold_acc_df["train_accuracy"],
+    marker="o",
+    label="Train accuracy"
+)
+
+plt.plot(
+    fold_acc_df["fold"],
+    fold_acc_df["test_accuracy"],
+    marker="o",
+    label="Test accuracy"
+)
+
+plt.xlabel("Fold")
+plt.ylabel("Accuracy")
+plt.title("Train vs Test Accuracy per Fold (LOGO CV)")
+plt.ylim(0, 1)
+plt.legend()
+plt.tight_layout()
+
+plt.savefig(os.path.join(cv_dir, "train_vs_test_accuracy_per_fold.png"),
+            dpi=300, bbox_inches="tight")
+plt.close()
+
+print(fold_acc_df.head())
+
+
+    # Clean up feature names: drop mg_/mt_ and append DNA/RNA labels
+import re
+
+cleaned_features = []
+for f in all_X.columns:
+    raw = f
+
+    # --- Remove mg_/mt_ ---
+    if raw.startswith("mg_"):
+        label = raw.replace("mg_", "")
+        suffix = " (DNA)"
+    elif raw.startswith("mt_"):
+        label = raw.replace("mt_", "")
+        suffix = " (RNA)"
+    else:
+        label = raw
+        suffix = ""
+
+    # --- Replace underscores with spaces ---
+    label = label.replace("_", " ")
+
+    # --- Remove anything starting with "strain ..." ---
+    label = re.sub(r"\s*strain.*", "", label)
+
+    # --- Extract genus + species ---
+    parts = label.split()
+    if len(parts) >= 2:
+        genus, species = parts[0], parts[1]
+        abbr = f"{genus[0].upper()}. {species}{suffix}"
+    else:
+        abbr = label + suffix
+
+    cleaned_features.append(abbr)
+
+
+    # Global beeswarm
+shap.summary_plot(all_shap, all_X, feature_names=cleaned_features,
+                  max_display=20, show=False)
+fig = plt.gcf()
+ax_main = fig.axes[0]
+ax_cbar = fig.axes[1]   # the colorbar axis on the right
+
+# Increase species name fonts
+ax_main.tick_params(labelsize=20)
+for lbl in ax_main.get_yticklabels():
+    lbl.set_fontweight("bold")
+
+# ---- REMOVE TEXT FROM COLORBAR BUT KEEP COLORBAR ----
+ax_cbar.set_ylabel("")            # remove "Feature value"
+ax_cbar.set_yticklabels([])       # remove High/Low
+ax_cbar.tick_params(length=0)     # remove tick marks
+
+for coll in ax_main.collections:
+    try:
+        sizes = coll.get_sizes()
+        coll.set_sizes(sizes * 4)   # increase marker size (change 4 → 3/5/10)
+    except Exception:
+        pass
+
+# Remove the SHAP x-axis label
+ax_main.set_xlabel("")
+
+# Fix spacing
+plt.subplots_adjust(left=0.35)
+
+# Save
+beeswarm_fig = os.path.join(shap_outdir, "global_SHAP_beeswarm.png")
+plt.savefig(beeswarm_fig, dpi=300, bbox_inches="tight")
+plt.close()
+print(f"[SHAP] Saved global SHAP beeswarm -> {beeswarm_fig}")
+# ============================================================
+# GLOBAL SHAP NUMERICAL OUTPUT (matches beeswarm)
+# ============================================================
+
+global_shap_df = pd.DataFrame({
+    "Feature": cleaned_features,
+    "mean_abs_SHAP": np.abs(all_shap).mean(axis=0),
+    "mean_SHAP": all_shap.mean(axis=0),
+    "median_SHAP": np.median(all_shap, axis=0),
+    "std_SHAP": all_shap.std(axis=0),
+    "pct_positive_SHAP": (all_shap > 0).mean(axis=0)
+})
+
+# Sort exactly like beeswarm (by mean |SHAP|)
+global_shap_df = global_shap_df.sort_values(
+    "mean_abs_SHAP", ascending=False
+)
+
+# Save full table
+global_csv = os.path.join(shap_outdir, "global_SHAP_values_full.csv")
+global_shap_df.to_csv(global_csv, index=False)
+
+# Save top 20 (what you plotted)
+top20_csv = os.path.join(shap_outdir, "global_SHAP_values_top20.csv")
+global_shap_df.head(20).to_csv(top20_csv, index=False)
+
+print("[SHAP] Saved global SHAP numerical values:")
+print(" •", global_csv)
+print(" •", top20_csv)
+
+mean_abs_global = np.abs(all_shap).mean(axis=0)
+global_shap_df = pd.DataFrame({
+        "Feature": all_X.columns,
+        "mean_abs_SHAP": mean_abs_global
+}).sort_values("mean_abs_SHAP", ascending=False)
+global_csv = os.path.join(shap_outdir, "global_SHAP_summary.csv")
+global_shap_df.to_csv(global_csv, index=False)
+print(f"[SHAP] Saved global SHAP summary CSV -> {global_csv}")
+
+    # Save global barplot
+plt.figure(figsize=(10, 6))
+plt.barh(global_shap_df["Feature"].head(20)[::-1],
+         global_shap_df["mean_abs_SHAP"].head(20)[::-1],
+         color="darkgreen")
+plt.xlabel("Mean |SHAP| (global OOF)")
+plt.title("Top 20 features by SHAP (Global across folds)")
+plt.tight_layout()
+plt.savefig(os.path.join(shap_outdir, "global_SHAP_barplot.png"),
+            dpi=300, bbox_inches="tight")
+plt.close()
+print(f"[SHAP] Saved global SHAP barplot.")
+
+# Summary of Results
+mean_accuracy = np.mean(fold_accuracies)
+std_accuracy = np.std(fold_accuracies)
+
+print("\nBest Parameters (last fold):", best_params)
+print(f"Mean Accuracy: {mean_accuracy:.2f} ± {std_accuracy:.2f}")
+
+
+# Classification Report
+print("\nClassification Report:")
+print(classification_report(y_true, y_pred, target_names=["Non-AD", "AD"]))
+# Create the classification report as a DataFrame
+classification_metrics = {
+ "Label": ["Non-AD", "AD", "accuracy", "macro avg", "weighted avg"],
+    "Precision": [0.83, 0.78, "", 0.81, 0.80],
+    "Recall": [0.71, 0.88, "", 0.79, 0.80],
+    "F1-score": [0.77, 0.82, 0.80, 0.80, 0.80],
+    "Support": [14, 16, 30, 30, 30]
+}
+df = pd.DataFrame(classification_metrics)
+# Create figure and axis
+fig, ax = plt.subplots(figsize=(8, 2.5))
+ax.axis('off')
+
+# Create table
+table = ax.table(
+    cellText=df.values,
+    colLabels=df.columns,
+    cellLoc='center',
+    loc='center'
+)
+# Style table
+table.auto_set_font_size(False)
+table.set_fontsize(12)
+table.scale(1, 2)
+
+# === SAVE FIGURE HERE ===
+save_path = r"C:\Users\brand\Desktop\ADFilteredSpeciesTest1\Test 4\Random Forest\classification_report_table.png"
+plt.savefig(save_path, dpi=300, bbox_inches="tight")
+# Train a decision tree on the full dataset
+tree_outdir = r"C:\Users\brand\Desktop\ADFilteredSpeciesTest1\Test 4\Random Forest"
+os.makedirs(tree_outdir, exist_ok=True)
+
+# Use the same X you trained LOGO on (all features)
+X_selected = X.copy()
+selected_features = list(X_selected.columns)
+
+tree_model = DecisionTreeClassifier(max_depth=4, random_state=42)
+tree_model.fit(X_selected, y)
+y_train_pred = tree_model.predict(X_selected)
+train_acc = accuracy_score(y, y_train_pred)
+
+print(f"Decision Tree training accuracy (full dataset): {train_acc:.2f}")
+
+plt.figure(figsize=(24, 12))
+plot_tree(
+    tree_model,
+    feature_names=selected_features,     # MUST match X_selected columns
+    class_names=["Non-AD", "AD"],
+    filled=True,
+    rounded=True,
+    fontsize=10
+)
+plt.title("Decision Tree (trained on full dataset)", fontsize=16)
+plt.tight_layout()
+
+tree_path = os.path.join(tree_outdir, "decision_tree_full_dataset.png")
+plt.savefig(tree_path, dpi=300, bbox_inches="tight")
+plt.close()
+
+print(f"[TREE] Saved full-dataset decision tree -> {tree_path}")
+fpr, tpr, thr = roc_curve(y_true, y_probs)     # assumes AD = 1
+auc = roc_auc_score(y_true, y_probs)
+
+plt.figure(figsize=(6, 6))
+
+plt.plot(
+    fpr, tpr,
+    linewidth=2,
+    label=f"Random Forest (AUC = {auc:.3f})"
+)
+
+plt.plot(
+    [0, 1], [0, 1],
+    linestyle="--",
+    linewidth=2,
+    label="Chance"
+)
+
+# Tick labels
+plt.xticks(fontsize=18)
+plt.yticks(fontsize=18)
+
+# Legend: bigger + Times New Roman
+plt.legend(
+    fontsize=15,
+    loc="lower right",
+    frameon=False
+)
+
+plt.grid(True)
+plt.tight_layout()
+
+roc_fig = os.path.join(
+    r"C:\Users\brand\Desktop\ADFilteredSpeciesTest1\Test 4\Random Forest",
+    "ROC_curve.png"
+)
+
+plt.savefig(roc_fig, dpi=300, bbox_inches="tight")
+plt.close()
+
+
+# === ROC curve (using out-of-fold probabilities) ===
+fpr, tpr, thr = roc_curve(y_true, y_probs)  # assumes AD is labeled 1
+auc = roc_auc_score(y_true, y_probs)
+
+print(f"\nROC-AUC: {auc:.3f}")
+
+# === Confusion Matrix ===
+cm = confusion_matrix(y_true, y_pred)
+print("\nConfusion Matrix:")
+print(cm)
+
+# Plot without labels
+fig, ax = plt.subplots(figsize=(6, 6))
+cm_display = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=["", ""])
+
+# Plot the confusion matrix
+cm_display.plot(cmap="Purples", values_format="d", ax=ax)
+
+# Make the numbers larger
+for text in ax.texts:
+    text.set_fontsize(32)  # Increase number size
+
+# Make colorbar tick labels bigger
+cbar = ax.images[0].colorbar
+cbar.ax.tick_params(labelsize=14)
+
+# Remove axis labels + ticks
+ax.set_xlabel("")
+ax.set_ylabel("")
+ax.set_xticklabels([])
+ax.set_yticklabels([])
+
+# Increase tick font size if needed (won't matter since they're blank)
+ax.tick_params(axis='both', labelsize=30)
+
+plt.tight_layout()
+
+# Save figure
+cm_fig = os.path.join(shap_outdir, "confusion_matrix.png")
+plt.savefig(cm_fig, dpi=300, bbox_inches="tight")
+plt.close()
+
+print(f"[RESULTS] Saved confusion matrix plot -> {cm_fig}")
+
+
+# selected_features
+# === Extract feature importances from the last fold's trained model ===
+importances = optimized_rf_classifier.feature_importances_
+importance_df = pd.DataFrame({
+    'Feature': vt_features,
+    'Importance': importances
+})
+
+# === Compute correlation with AD vs Healthy ===
+correlations = []
+p_values = []
+
+for feature in vt_features:
+    r, p = pearsonr(X[feature], y)  # y is binary: 0 (Healthy), 1 (AD)
+    correlations.append(r)
+    p_values.append(p)
+
+# Add correlation info
+importance_df['correlation'] = correlations
+importance_df['p_value'] = p_values
+
+# === Select Top 10 by Feature Importance ===
+top_10_pd = importance_df.sort_values(by='Importance', ascending=False).head(10)
+
+# === Assign colors based on significance and correlation direction ===
+def assign_significance_color(row, alpha=0.05):
+    if row['p_value'] < alpha:
+        return 'red' if row['correlation'] > 0 else 'blue'
+    else:
+        return 'gray'
+
+top_10_pd['Color'] = top_10_pd.apply(assign_significance_color, axis=1)
+
+# === Plot the top 10 features ===
+plt.figure(figsize=(12, 6))
+plt.bar(
+    top_10_pd['Feature'],
+    top_10_pd['Importance'],
+    color=top_10_pd['Color']
+)
+
+plt.xticks(rotation=90, ha='right', fontsize=12)
+plt.yticks(fontsize=12)
+plt.xlabel("Bacteria", fontsize=14)
+plt.ylabel("Feature Importance", fontsize=14)
+plt.title("Top 10 Features for AD Combined Species", fontsize=16)
+# === Export top 10 features to CSV ===
+top_10_path = r"C:\Users\brand\Desktop\top_10_features_AD_combined_species.csv"
+top_10_pd.to_csv(top_10_path, index=False)
+print(f"Top 10 features exported to: {top_10_path}")
+
+
+# === Custom legend ===
+legend_patches = [
+    mpatches.Patch(color='red', label='Significant (+)'),
+    mpatches.Patch(color='blue', label='Significant (–)'),
+    mpatches.Patch(color='gray', label='Not Significant')
+]
+plt.legend(handles=legend_patches, title='Correlation with AD', loc='upper right')
+
+plt.tight_layout()
+plt.show()
+# === Select features on full dataset for decision tree ===
+vt = VarianceThreshold(threshold=0.0)
+X_vt = vt.fit_transform(X)
+vt_features = X.columns[vt.get_support()]
+
+
+# Train a decision tree on the full dataset
+tree_model = DecisionTreeClassifier(max_depth=4, random_state=42)
+tree_model.fit(X_vt, y)
+plt.figure(figsize=(24, 12))
+plot_tree(
+    tree_model,
+    feature_names=vt_features,
+    class_names=["Non-AD", "AD"],
+    filled=True,
+    rounded=True,
+    fontsize=13
+)
+#plt.title("Decision Tree for AD Species vs Non-AD Species", fontsize=14)
+plt.tight_layout()
+plt.show()
+# Compute correlation and p-value for each feature
+correlations = []
+p_values = []
+
+for feature in vt_features:
+    r, p = pearsonr(X[feature], y)
+    correlations.append(r)
+    p_values.append(p)
+
+# Create DataFrame
+correlation_df = pd.DataFrame({
+    'Pathogen': vt_features,
+    'Correlation_with_AD': correlations,
+    'p_value': p_values
+})
+
+# Filter and copy significant rows
+significant_pathogens = correlation_df[correlation_df['p_value'] < 0.05].copy()
+
+# Assign correlation direction
+significant_pathogens.loc[:, 'Direction'] = significant_pathogens['Correlation_with_AD'].apply(
+    lambda r: 'Positive' if r > 0 else 'Negative'
+)
+
+# Save to CSV
+output_path = r"C:\Users\brand\Desktop\Significant_Species_Combined_vs_Healthy.csv"
+significant_pathogens.to_csv(output_path, index=False)
+# Sort by importance
+significant_pathogens = significant_pathogens.sort_values(by='p_value', ascending=True)
+
+# Assign color based on correlation sign
+# === Assign colors for bar plot ===
+colors = ['red' if d == 'Positive' else 'blue' for d in significant_pathogens['Direction']]
+
+# Plot
+plt.figure(figsize=(16, 8))
+plt.bar(
+    x=significant_pathogens['Pathogen'],
+    height=significant_pathogens['p_value'],
+    color=colors
+)
+plt.xticks(rotation=90, fontsize=10)
+plt.xlabel("Significant Pathogens", fontsize=12)
+plt.ylabel("P-Value", fontsize=12)
+plt.title("Significant Biomarkers (p < 0.05)\nColored by Correlation with AD", fontsize=14)
+plt.grid(axis='y', linestyle='--', alpha=0.7)
+# === Add Legend for Significant Pathogens ===
+import matplotlib.patches as mpatches
+legend_patches = [
+    mpatches.Patch(color='red', label='Significant (+)'),
+    mpatches.Patch(color='blue', label='Significant (–)')
+]
+plt.legend(handles=legend_patches, title='Correlation with AD', loc='upper right')
+
+plt.tight_layout()
+plt.show()
+# Initialize storage for results
+correlation_results = []
+# Calculate Pearson correlation and p-value for each biomarker
+for feature in X.columns:
+    values = X[feature]
+    if np.all(values == values.iloc[0]):
+        correlation = np.nan
+        p_value = np.nan
+    else:
+        correlation, p_value = pearsonr(values,y)
+    correlation_results.append({
+        'Biomarker': feature,
+        'Pearson Correlation': correlation,
+        'P-value': p_value
+    })
+
+# Convert results to DataFrame
+correlation_df = pd.DataFrame(correlation_results)
+
+# Sort by absolute correlation values
+correlation_df = correlation_df.sort_values(by='Pearson Correlation', key=abs, ascending=False)
+
+# Display all results in the output
+print("\nPearson Correlation and P-values for All Biomarkers:")
+print(correlation_df)
+
+# === Save full Pearson correlation results to CSV ===
+correlation_output_path = r"C:\Users\brand\Desktop\AD_combined_Species_Pearson_Correlations.csv"
+correlation_df.to_csv(correlation_output_path, index=False)
+print(f"\nFull Pearson correlation results saved to: {correlation_output_path}")
