@@ -95,7 +95,7 @@ for train_idx, test_idx in logo.split(X, y, groups=groups):
     dt_fold_accuracies.append(acc)
 
     # GridSearchCV for hyperparameter tuning
-    rf_classifier = RandomForestClassifier(class_weight='balanced', random_state=42)
+    rf_classifier = RandomForestClassifier(random_state=42)
     grid_search = GridSearchCV(rf_classifier, param_grid, scoring='roc_auc', cv=3, n_jobs=-1)
     grid_search.fit(X_train, y_train)
     best_params = grid_search.best_params_
