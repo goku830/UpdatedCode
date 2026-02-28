@@ -1,0 +1,186 @@
+import pandas as pd
+import numpy as np
+import os
+
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import GridSearchCV, LeaveOneGroupOut
+from sklearn.feature_selection import VarianceThreshold
+from sklearn.metrics import accuracy_score
+
+
+# ================================
+# 1. Load Data
+# ================================
+file_path = r"C:\Users\brand\Desktop\trial1.xlsx"
+df = pd.read_excel(file_path)
+
+# ================================
+# 2. Prepare Metadata and Features
+# ================================
+groups = df['species'].values
+labels = df['label'].values
+feature_df = df.drop(columns=['species', 'Source', 'label'])
+
+# ================================
+# 3. Define Threshold Ranges
+# ================================
+zero_thresholds = [0.9, 0.8, 0.7, 0.6, 0.5]   # 90% zeros → 50% zeros
+mean_thresholds = list(range(10, 201, 10))    # 10 → 200
+std_thresholds = list(range(10, 201, 10))     # 10 → 200
+
+# ================================
+# 4. Output Directory
+# ================================
+output_dir = r"C:\Users\brand\Desktop\FilteredFeaturedAD4"
+os.makedirs(output_dir, exist_ok=True)
+
+# ================================
+# 5. Random Forest Hyperparameters
+# ================================
+param_grid = {
+    'n_estimators': [50, 100],
+    'max_depth': [3, 5, 10],
+    'min_samples_split': [2, 5],
+    'min_samples_leaf': [1, 2],
+    'max_features': ['sqrt']
+}
+
+
+# =====================================================
+# 6. Loop Over Filtering Combinations
+# =====================================================
+for zero_thresh in zero_thresholds:
+
+    # --- Zero prevalence filtering (GLOBAL) ---
+    zero_fraction = (feature_df == 0).sum() / feature_df.shape[0]
+    prevalence_mask = zero_fraction <= zero_thresh
+    prevalence_filtered = feature_df.loc[:, prevalence_mask]
+
+    if prevalence_filtered.shape[1] == 0:
+        print(f"Zero ≤ {zero_thresh*100:.0f}% => No features passed.")
+        continue
+
+    # Recompute mean/std after zero filtering
+    feature_means = prevalence_filtered.mean()
+    feature_stds = prevalence_filtered.std()
+
+    for mean_thresh in mean_thresholds:
+        for std_thresh in std_thresholds:
+
+            keep_mask = (
+                (feature_means >= mean_thresh) &
+                (feature_stds >= std_thresh)
+            )
+
+            filtered_features = prevalence_filtered.loc[:, keep_mask]
+
+            if filtered_features.shape[1] == 0:
+                print(
+                    f"Zero ≤ {zero_thresh*100:.0f}% | "
+                    f"Mean ≥ {mean_thresh} | "
+                    f"STD ≥ {std_thresh} => No features passed."
+                )
+                continue
+
+            # ================================
+            # Save filtered dataset
+            # ================================
+            filtered_full = pd.concat(
+                [
+                    df[['species', 'Source', 'label']].reset_index(drop=True),
+                    filtered_features.reset_index(drop=True)
+                ],
+                axis=1
+            )
+
+            zero_percent = int(zero_thresh * 100)
+            output_filename = (
+                f"filtered_zero{zero_percent}"
+                f"_mean{mean_thresh}"
+                f"_std{std_thresh}.xlsx"
+            )
+            output_path = os.path.join(output_dir, output_filename)
+            filtered_full.to_excel(output_path, index=False)
+
+            print(f"Saved: {output_filename}")
+
+            # ================================
+            # Outer Leave-One-Group-Out CV
+            # ================================
+            logo = LeaveOneGroupOut()
+
+            fold_accuracies = []
+            y_true, y_pred, y_probs = [], [], []
+
+            for train_idx, test_idx in logo.split(filtered_features, labels, groups):
+
+                X_train_raw = filtered_features.iloc[train_idx]
+                X_test_raw = filtered_features.iloc[test_idx]
+                y_train = labels[train_idx]
+                y_test = labels[test_idx]
+
+                # ---- Variance Threshold (TRAIN ONLY) ----
+                vt = VarianceThreshold(threshold=0.0)
+                X_train_vt = vt.fit_transform(X_train_raw)
+                X_test_vt = vt.transform(X_test_raw)
+
+                vt_features = X_train_raw.columns[vt.get_support()]
+
+                X_train = pd.DataFrame(X_train_vt, columns=vt_features)
+                X_test = pd.DataFrame(X_test_vt, columns=vt_features)
+
+                if X_train.shape[1] == 0:
+                    continue
+
+                # ---- Inner GridSearch ----
+                rf = RandomForestClassifier(random_state=42)
+
+                grid_search = GridSearchCV(
+                    rf,
+                    param_grid,
+                    scoring='roc_auc',
+                    cv=3,
+                    n_jobs=-1
+                )
+
+                grid_search.fit(X_train, y_train)
+                best_params = grid_search.best_params_
+
+                # ---- Retrain Optimized Model ----
+                optimized_rf = RandomForestClassifier(
+                    **best_params,
+                    random_state=42
+                )
+
+                optimized_rf.fit(X_train, y_train)
+
+                # ---- Predictions ----
+                y_pred_fold = optimized_rf.predict(X_test)
+                y_probs_fold = optimized_rf.predict_proba(X_test)[:, 1]
+
+                y_pred.extend(y_pred_fold)
+                y_true.extend(y_test)
+                y_probs.extend(y_probs_fold)
+
+                fold_acc = accuracy_score(y_test, y_pred_fold)
+                fold_accuracies.append(fold_acc)
+
+            # ================================
+            # Print Accuracy Summary
+            # ================================
+            if len(fold_accuracies) > 0:
+                mean_acc = np.mean(fold_accuracies)
+                std_acc = np.std(fold_accuracies)
+
+                print(
+                    f"Zero ≤ {zero_percent}% | "
+                    f"Mean ≥ {mean_thresh} | "
+                    f"STD ≥ {std_thresh} | "
+                    f"Accuracy: {mean_acc:.3f} ± {std_acc:.3f}\n"
+                )
+            else:
+                print(
+                    f"Zero ≤ {zero_percent}% | "
+                    f"Mean ≥ {mean_thresh} | "
+                    f"STD ≥ {std_thresh} => No valid folds.\n"
+                )
