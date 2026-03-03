@@ -25,8 +25,8 @@ feature_df = df.drop(columns=['species', 'Source', 'label'])
 # 3. Define Threshold Ranges
 # ================================
 zero_thresholds = [0.9, 0.8, 0.7, 0.6, 0.5]   # 90% zeros → 50% zeros
-mean_thresholds = list(range(10, 201, 10))    # 10 → 200
-std_thresholds = list(range(10, 201, 10))     # 10 → 200
+mean_thresholds = list(range(10, 51, 10))   # 10 → 50
+std_thresholds  = list(range(10, 51, 10))   # 10 → 50
 
 # ================================
 # 4. Output Directory
