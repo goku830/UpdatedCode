@@ -1,0 +1,39 @@
+import pandas as pd
+from ete3 import NCBITaxa
+
+# load NCBI taxonomy database
+ncbi = NCBITaxa()
+
+input_file = r"C:\Users\brand\Desktop\MGXspecisplate1\MGX1_species_clade_counts1_matrix.csv"
+output_file = r"C:\Users\brand\Desktop\MGX_no_animalia.csv"
+
+df = pd.read_csv(input_file)
+
+cols_to_drop = []
+
+for col in df.columns:
+
+    if col.lower() in ["subjects","label"]:
+        continue
+
+    try:
+        species_name = col.replace("_", " ")
+        taxid = ncbi.get_name_translator([species_name])
+        if taxid:
+            taxid = list(taxid.values())[0][0]
+            lineage = ncbi.get_lineage(taxid)
+            names = ncbi.get_taxid_translator(lineage)
+
+            if "Animalia" in names.values():
+                cols_to_drop.append(col)
+
+    except:
+        pass
+
+print("Animal taxa found:", len(cols_to_drop))
+
+df_filtered = df.drop(columns=cols_to_drop)
+
+df_filtered.to_csv(output_file, index=False)
+
+print("Saved filtered file:", output_file)
